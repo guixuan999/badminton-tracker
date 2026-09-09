@@ -58,8 +58,26 @@
   </div>
 
   <div class="card">
-    <h2>参训明细</h2>
-    <ul class="list" id="attendance-list"></ul>
+    <details id="att-details">
+      <summary class="fold">
+        <span>参训明细</span>
+        <span class="fold-hint" id="att-hint">点击展开</span>
+      </summary>
+      <div class="row" style="margin:10px 0 8px">
+        <button class="chip att-chip" data-att="sinceLastPay">上次缴费以来</button>
+        <button class="chip att-chip" data-att="thisWeek">本周</button>
+        <button class="chip att-chip" data-att="thisMonth">本月</button>
+        <button class="chip att-chip" data-att="lastMonth">上月</button>
+        <button class="chip att-chip" data-att="all">全部</button>
+        <button class="chip att-chip" data-att="custom">自定义</button>
+      </div>
+      <div class="row" id="att-custom" style="display:none; align-items:flex-end; margin-bottom:8px">
+        <div style="flex:1"><label class="field">开始</label><input type="date" id="att-start"></div>
+        <div style="flex:1"><label class="field">结束</label><input type="date" id="att-end"></div>
+      </div>
+      <div class="note" id="att-range-note"></div>
+      <ul class="list" id="attendance-list"></ul>
+    </details>
   </div>
 
   <div class="card">

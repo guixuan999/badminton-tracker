@@ -198,3 +198,29 @@ label.field { display: block; font-size: 12px; color: var(--muted); margin-botto
 
 .gate { max-width: 320px; margin: 80px auto; }
 .note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+
+.fold {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 2px 0;
+}
+.fold::-webkit-details-marker { display: none; }
+.fold::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform .18s;
+  flex: none;
+  margin-left: 4px;
+}
+details[open] > .fold::after { transform: rotate(-135deg); }
+.fold-hint { font-size: 12px; font-weight: 400; color: var(--muted); }

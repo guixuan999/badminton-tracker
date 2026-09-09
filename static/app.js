@@ -11,7 +11,11 @@
     summary: { range_count: 0, total_count: 0, paid_sessions: 0, paid_amount: 0, remaining: 0 },
     preset: "thisWeek",
     start: "",
-    end: ""
+    end: "",
+    attPreset: "sinceLastPay",
+    attStart: "",
+    attEnd: "",
+    attDays: []
   };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -86,6 +90,7 @@
       state.payments = data.payments || [];
       state.summary = data.summary || state.summary;
       render();
+      if ($("att-details").open) { return loadAttendance(); }
     });
   }
 
@@ -156,32 +161,99 @@
     $("calendar").innerHTML = span > 20 ? renderMonthGrids() : renderWeekChunks();
   }
 
-  function renderLists() {
-    var days = Object.keys(state.signed).filter(function (d) {
-      return d >= state.start && d <= state.end;
-    }).sort().reverse();
+  var ATT_PRESET_NAME = {
+    sinceLastPay: "上次缴费以来",
+    thisWeek: "本周",
+    thisMonth: "本月",
+    lastMonth: "上月",
+    all: "全部",
+    custom: "自定义"
+  };
 
-    var att = $("attendance-list");
-    if (!days.length) {
-      att.innerHTML = '<li class="empty-tip">该时间范围内没有参训记录</li>';
+  function lastPayDate() {
+    if (!state.payments.length) { return null; }
+    return state.payments.reduce(function (acc, p) {
+      return p.pay_date > acc ? p.pay_date : acc;
+    }, state.payments[0].pay_date);
+  }
+
+  function computeAttRange() {
+    var t = parseISO(state.today);
+    var p = state.attPreset;
+    var s, e;
+    if (p === "all") {
+      s = "1970-01-01"; e = "2999-12-31";
+    } else if (p === "sinceLastPay") {
+      var lp = lastPayDate();
+      s = lp || iso(new Date(t.getFullYear(), t.getMonth(), 1));
+      e = state.today;
+    } else if (p === "thisWeek") {
+      s = iso(weekStart(t)); e = iso(addDays(weekStart(t), 6));
+    } else if (p === "thisMonth") {
+      s = iso(new Date(t.getFullYear(), t.getMonth(), 1));
+      e = iso(new Date(t.getFullYear(), t.getMonth() + 1, 0));
+    } else if (p === "lastMonth") {
+      s = iso(new Date(t.getFullYear(), t.getMonth() - 1, 1));
+      e = iso(new Date(t.getFullYear(), t.getMonth(), 0));
     } else {
-      att.innerHTML = days.map(function (d) {
-        return '<li><span>' + d + " " + weekdayCN(d) + "</span>" +
-          '<button class="btn-mini danger" data-del-date="' + d + '">取消报名</button></li>';
-      }).join("");
+      s = $("att-start").value || state.today;
+      e = $("att-end").value || state.today;
+      if (s > e) { var tmp = s; s = e; e = tmp; }
     }
+    state.attStart = s;
+    state.attEnd = e;
+  }
 
+  function renderAttendanceList() {
+    var open = $("att-details").open;
+    $("att-custom").style.display = state.attPreset === "custom" && open ? "flex" : "none";
+    var chips = document.querySelectorAll(".att-chip");
+    for (var i = 0; i < chips.length; i++) {
+      chips[i].className = "chip att-chip" +
+        (chips[i].getAttribute("data-att") === state.attPreset ? " active" : "");
+    }
+    if (!open) { return; }
+
+    var rangeText = state.attPreset === "sinceLastPay"
+      ? "上次缴费（" + state.attStart + "）至今"
+      : state.attPreset === "all" ? "全部记录" : state.attStart + " 至 " + state.attEnd;
+    $("att-range-note").textContent = rangeText + " · 共 " + state.attDays.length + " 次" +
+      (state.attPreset === "sinceLastPay" && !state.payments.length ? "（无缴费记录，暂按本月显示）" : "");
+    $("att-hint").textContent = state.attDays.length + " 次";
+
+    var el = $("attendance-list");
+    if (!state.attDays.length) {
+      el.innerHTML = '<li class="empty-tip">该时间范围内没有参训记录</li>';
+      return;
+    }
+    el.innerHTML = state.attDays.map(function (d) {
+      return '<li><span>' + d + " " + weekdayCN(d) + "</span>" +
+        '<button class="btn-mini danger" data-del-date="' + d + '">取消报名</button></li>';
+    }).join("");
+  }
+
+  function loadAttendance() {
+    computeAttRange();
+    return request("/api/state?start=" + state.attStart + "&end=" + state.attEnd)
+      .then(function (data) {
+        state.attDays = (data.attendance || []).slice().sort().reverse();
+        renderAttendanceList();
+      })
+      .catch(function () { /* 未授权时由 gate 处理 */ });
+  }
+
+  function renderPaymentList() {
     var pay = $("payment-list");
     if (!state.payments.length) {
       pay.innerHTML = '<li class="empty-tip">还没有缴费记录</li>';
-    } else {
-      pay.innerHTML = state.payments.map(function (p) {
-        return '<li><span>' + p.pay_date + " · " + p.sessions + " 次" +
-          (p.note ? ' · <span class="meta">' + escapeHTML(p.note) + "</span>" : "") +
-          '</span><span><strong>' + money(p.amount) + "</strong> " +
-          '<button class="btn-mini danger" data-del-pay="' + p.id + '">删除</button></span></li>';
-      }).join("");
+      return;
     }
+    pay.innerHTML = state.payments.map(function (p) {
+      return '<li><span>' + p.pay_date + " · " + p.sessions + " 次" +
+        (p.note ? ' · <span class="meta">' + escapeHTML(p.note) + "</span>" : "") +
+        '</span><span><strong>' + money(p.amount) + "</strong> " +
+        '<button class="btn-mini danger" data-del-pay="' + p.id + '">删除</button></span></li>';
+    }).join("");
   }
 
   function escapeHTML(s) {
@@ -196,7 +268,7 @@
     $("range-label").textContent = label + "（" + presetName[state.preset] + "）";
     $("today-label").textContent = state.today + " " + weekdayCN(state.today);
 
-    var chips = document.querySelectorAll(".chip");
+    var chips = document.querySelectorAll(".chip:not(.att-chip)");
     for (var i = 0; i < chips.length; i++) {
       chips[i].className = "chip" + (chips[i].getAttribute("data-preset") === state.preset ? " active" : "");
     }
@@ -222,11 +294,12 @@
     remEl.textContent = rem;
     remEl.className = "v" + (rem <= 3 ? " warn" : "");
 
-    renderLists();
+    renderPaymentList();
+    renderAttendanceList();
   }
 
   function bindEvents() {
-    var chips = document.querySelectorAll(".chip");
+    var chips = document.querySelectorAll(".chip:not(.att-chip)");
     for (var i = 0; i < chips.length; i++) {
       chips[i].addEventListener("click", function () {
         state.preset = this.getAttribute("data-preset");
@@ -234,6 +307,26 @@
         load();
       });
     }
+
+    var attChips = document.querySelectorAll(".att-chip");
+    for (var j = 0; j < attChips.length; j++) {
+      attChips[j].addEventListener("click", function () {
+        state.attPreset = this.getAttribute("data-att");
+        loadAttendance();
+      });
+    }
+
+    $("att-details").addEventListener("toggle", function () {
+      if (this.open) { loadAttendance(); }
+      else { $("att-hint").textContent = "点击展开"; }
+    });
+
+    $("att-start").addEventListener("change", function () {
+      if (state.attPreset === "custom") { loadAttendance(); }
+    });
+    $("att-end").addEventListener("change", function () {
+      if (state.attPreset === "custom") { loadAttendance(); }
+    });
 
     $("btn-today").addEventListener("click", function () {
       state.preset = "thisWeek";
@@ -311,6 +404,8 @@
         $("pay-date").value = data.today;
         $("start-date").value = state.today;
         $("end-date").value = state.today;
+        $("att-start").value = state.today;
+        $("att-end").value = state.today;
         computeRange(state.preset || "thisWeek");
         return load();
       })
