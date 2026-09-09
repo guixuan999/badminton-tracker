@@ -4,14 +4,14 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/badminton
+WorkingDirectory=/opt/badminton-tracker
 # 只监听本机，外网只能通过 nginx 转发访问
 Environment=HOST=127.0.0.1
 Environment=PORT=8765
 # 部署到公网必须设置，否则任何人都能看到缴费记录
 Environment=ACCESS_CODE=改成你自己的口令
-Environment=DB_PATH=/opt/badminton/data/training.db
-ExecStart=/usr/bin/python3 /opt/badminton/server.py
+Environment=DB_PATH=/opt/badminton-tracker/data/training.db
+ExecStart=/usr/bin/python3 /opt/badminton-tracker/server.py
 Restart=always
 RestartSec=3
 

@@ -32,7 +32,7 @@ python3 server.py
 
 前端所有资源与接口都用**相对路径**，因此既能挂在域名根路径，也能挂在 `/bm/` 这样的子路径，后端无需改动。
 
-1. 上传整个目录到服务器（如 `/opt/badminton`），确认有 Python 3.6+
+1. 上传整个目录到服务器（本项目部署在 `/opt/badminton-tracker`），确认有 Python 3.7+
 
 2. 放好 nginx 片段，并让博客站点引用它：
 
@@ -40,7 +40,7 @@ python3 server.py
 sudo cp deploy/nginx-badminton.conf /etc/nginx/snippets/badminton.conf
 ```
 
-在博客站点的 `server { }` 块**内**加一行（443 块必须加；若 80 块也直接提供博客服务，同样加一行）：
+在博客站点的 `server { }` 块**内**加一行：
 
 ```nginx
 include /etc/nginx/snippets/badminton.conf;
@@ -53,6 +53,9 @@ sudo nginx -t && sudo systemctl reload nginx
 > 原理：`proxy_pass http://127.0.0.1:8765/;` 结尾的斜杠会剥掉 `/bm/` 前缀，
 > 所以 `/bm/api/state` 到后端就是 `/api/state`。
 > 想下线只删那一行 `include` 即可，博客配置一行不改。
+>
+> 注意：如果 80 和 443 在**同一个** server 块里（certbot 常见做法，`listen 80;` 与
+> `listen 443 ssl;` 并列），加一次就够；分成两块时才需要各加一行。
 
 3. 配置 systemd 守护（注意 `HOST=127.0.0.1` 让端口只对本机开放）：
 
@@ -63,7 +66,29 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now badminton
 ```
 
-4. 访问 `https://你的域名/bm/`，手机可「添加到主屏幕」当 App 用。
+4. 访问 `https://你的域名/bm/`，首次打开会要求输入 `ACCESS_CODE`（存在浏览器 localStorage，之后免输）。手机可「添加到主屏幕」当 App 用。
+
+### ⚠️ 两个部署时容易踩的坑
+
+**① 云服务器通常有两道防火墙，都要放行 80/443**
+
+- 云厂商控制台的**安全组**（阿里云 / 腾讯云等）
+- 机器本机运行的 **ufw / firewalld**
+
+只开一道的表现是：外网 SYN 包到达网卡但无任何响应（`curl` 返回 `000`，浏览器转圈到超时）。
+定位方法：
+
+```bash
+sudo tcpdump -i any -nn 'tcp port 443'    # 只有 [S] 没有 [S.] 即为被丢包
+sudo ufw status                            # 看本机防火墙放行了哪些端口
+```
+
+放行：`sudo ufw allow 443/tcp && sudo ufw reload`
+
+**② 从 http 切到 https 后需要重新输一次口令**
+
+localStorage 按**协议 + 域名 + 端口**隔离，http 和 https 是两个独立的源，口令不会自动带过去。
+第一次打开 https 版本时重新输入一次即可，之后照常免输。同理，之前用 http 地址添加的桌面图标要删掉重加。
 
 ## 数据库表
 
@@ -74,8 +99,16 @@ sudo systemctl enable --now badminton
 
 ## 备份
 
-数据库是单个文件，定期拷走即可：
+数据库是单个文件。建议用 `tools/backup.sh` 做定时备份（保留最近 30 份）：
 
 ```bash
-cp /opt/badminton/data/training.db /opt/badminton/data/training.db.bak
+chmod +x tools/backup.sh
+# 每天凌晨 3 点自动备份
+(crontab -l 2>/dev/null; echo "0 3 * * * /opt/badminton-tracker/tools/backup.sh") | crontab -
+```
+
+手动拷走一份：
+
+```bash
+cp /opt/badminton-tracker/data/training.db ~/training.db.bak
 ```
