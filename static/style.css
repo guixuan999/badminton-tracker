@@ -31,9 +31,14 @@ body {
 
 header.top {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  align-items: center;
   margin-bottom: 14px;
+}
+
+header.top .right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 header.top h1 {
