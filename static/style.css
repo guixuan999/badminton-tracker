@@ -223,4 +223,12 @@ label.field { display: block; font-size: 12px; color: var(--muted); margin-botto
   margin-left: 4px;
 }
 details[open] > .fold::after { transform: rotate(-135deg); }
-.fold-hint { font-size: 12px; font-weight: 400; color: var(--muted); }
+.inline-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-left: 6px;
+}
+.inline-confirm .btn-mini { border-color: var(--color-border-secondary, #d0d3d8); }

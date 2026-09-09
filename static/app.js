@@ -16,7 +16,8 @@
     attStart: "",
     attEnd: "",
     attDays: [],
-    payManage: false
+    payManage: false,
+    pendingPay: null
   };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -253,12 +254,17 @@
       return;
     }
     pay.innerHTML = state.payments.map(function (p) {
-      var del = state.payManage
-        ? ' <button class="btn-mini danger" data-del-pay="' + p.id + '">删除</button>'
-        : "";
+      var action = '<button class="btn-mini danger" data-del-pay="' + p.id + '">删除</button>';
+      if (state.pendingPay === p.id) {
+        action = '<span class="inline-confirm">确认删除？' +
+          '<button class="btn-mini danger" data-confirm-pay="' + p.id + '">删除</button>' +
+          '<button class="btn-mini" data-cancel-del>取消</button></span>';
+      } else if (!state.payManage) {
+        action = "";
+      }
       return '<li><span>' + p.pay_date + " · " + p.sessions + " 次" +
         (p.note ? ' · <span class="meta">' + escapeHTML(p.note) + "</span>" : "") +
-        '</span><span><strong>' + money(p.amount) + "</strong>" + del + "</span></li>";
+        '</span><span><strong>' + money(p.amount) + "</strong> " + action + "</span></li>";
     }).join("");
 
     $("btn-pay-manage").textContent = state.payManage ? "完成" : "管理";
@@ -386,6 +392,7 @@
     $("btn-pay-cancel").addEventListener("click", closePayForm);
     $("btn-pay-manage").addEventListener("click", function () {
       state.payManage = !state.payManage;
+      state.pendingPay = null;
       renderPaymentList();
     });
 
@@ -407,12 +414,23 @@
     });
 
     $("payment-list").addEventListener("click", function (e) {
-      var btn = e.target.closest("[data-del-pay]");
-      if (!btn) { return; }
-      if (!confirm("确定删除这条缴费记录？")) { return; }
+      var del = e.target.closest("[data-del-pay]");
+      if (del) {
+        state.pendingPay = Number(del.getAttribute("data-del-pay"));
+        renderPaymentList();
+        return;
+      }
+      if (e.target.closest("[data-cancel-del]")) {
+        state.pendingPay = null;
+        renderPaymentList();
+        return;
+      }
+      var ok = e.target.closest("[data-confirm-pay]");
+      if (!ok) { return; }
+      state.pendingPay = null;
       request("/api/payment/delete", {
         method: "POST",
-        body: JSON.stringify({ id: btn.getAttribute("data-del-pay") })
+        body: JSON.stringify({ id: ok.getAttribute("data-confirm-pay") })
       }).then(function () { toast("已删除"); return load(); });
     });
 
