@@ -42,6 +42,21 @@ header.top h1 {
   margin: 0;
 }
 
+header.top .me {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+header.top .avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 0.5px solid var(--line);
+  background: #fff;
+}
+
 header.top .sub {
   font-size: 12px;
   color: var(--muted);
