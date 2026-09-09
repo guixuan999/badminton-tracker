@@ -85,7 +85,7 @@
   }
 
   function load() {
-    return request("/api/state?start=" + state.start + "&end=" + state.end).then(function (data) {
+    return request("api/state?start=" + state.start + "&end=" + state.end).then(function (data) {
       state.today = data.today;
       state.signed = {};
       data.attendance.forEach(function (d) { state.signed[d] = true; });
@@ -97,7 +97,7 @@
   }
 
   function toggleDay(dateStr) {
-    return request("/api/attendance/toggle", {
+    return request("api/attendance/toggle", {
       method: "POST",
       body: JSON.stringify({ date: dateStr })
     }).then(function (data) {
@@ -236,7 +236,7 @@
 
   function loadAttendance() {
     computeAttRange();
-    return request("/api/state?start=" + state.attStart + "&end=" + state.attEnd)
+    return request("api/state?start=" + state.attStart + "&end=" + state.attEnd)
       .then(function (data) {
         state.attDays = (data.attendance || []).slice().sort().reverse();
         renderAttendanceList();
@@ -404,7 +404,7 @@
         note: $("pay-note").value
       };
       if (!payload.amount || !payload.sessions) { toast("请填写金额和次数"); return; }
-      request("/api/payment/add", { method: "POST", body: JSON.stringify(payload) })
+      request("api/payment/add", { method: "POST", body: JSON.stringify(payload) })
         .then(function () {
           closePayForm();
           toast("已添加缴费记录");
@@ -428,7 +428,7 @@
       var ok = e.target.closest("[data-confirm-pay]");
       if (!ok) { return; }
       state.pendingPay = null;
-      request("/api/payment/delete", {
+      request("api/payment/delete", {
         method: "POST",
         body: JSON.stringify({ id: ok.getAttribute("data-confirm-pay") })
       }).then(function () { toast("已删除"); return load(); });
@@ -446,7 +446,7 @@
   }
 
   function start() {
-    request("/api/state?start=" + (state.start || "1970-01-01") + "&end=" + (state.end || "2999-12-31"))
+    request("api/state?start=" + (state.start || "1970-01-01") + "&end=" + (state.end || "2999-12-31"))
       .then(function (data) {
         $("gate").style.display = "none";
         $("app").style.display = "block";

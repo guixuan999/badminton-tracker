@@ -28,51 +28,42 @@ python3 server.py
 | `DB_PATH` | ./data/training.db | 数据库路径 |
 | `ACCESS_CODE` | 空 | 访问口令；**部署到公网时务必设置** |
 
-## 部署到云服务器
+## 部署到云服务器（nginx 子路径 /bm/，与现有站点共存）
+
+前端所有资源与接口都用**相对路径**，因此既能挂在域名根路径，也能挂在 `/bm/` 这样的子路径，后端无需改动。
 
 1. 上传整个目录到服务器（如 `/opt/badminton`），确认有 Python 3.6+
-2. 设置口令并做 systemd 守护：
 
-```ini
-# /etc/systemd/system/badminton.service
-[Unit]
-Description=Badminton Training Tracker
-After=network.target
+2. 放好 nginx 片段，并让博客站点引用它：
 
-[Service]
-WorkingDirectory=/opt/badminton
-Environment=PORT=8765
-Environment=ACCESS_CODE=你的口令
-ExecStart=/usr/bin/python3 /opt/badminton/server.py
-Restart=always
+```bash
+sudo cp deploy/nginx-badminton.conf /etc/nginx/snippets/badminton.conf
+```
 
-[Install]
-WantedBy=multi-user.target
+在博客站点的 `server { }` 块**内**加一行（443 块必须加；若 80 块也直接提供博客服务，同样加一行）：
+
+```nginx
+include /etc/nginx/snippets/badminton.conf;
 ```
 
 ```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+> 原理：`proxy_pass http://127.0.0.1:8765/;` 结尾的斜杠会剥掉 `/bm/` 前缀，
+> 所以 `/bm/api/state` 到后端就是 `/api/state`。
+> 想下线只删那一行 `include` 即可，博客配置一行不改。
+
+3. 配置 systemd 守护（注意 `HOST=127.0.0.1` 让端口只对本机开放）：
+
+```bash
+sudo cp deploy/badminton.service /etc/systemd/system/
+sudo $EDITOR /etc/systemd/system/badminton.service   # 改 ACCESS_CODE
 sudo systemctl daemon-reload
 sudo systemctl enable --now badminton
 ```
 
-3. 用 nginx 反代并配 HTTPS（域名已备案，可直接签发证书）：
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name 你的域名;
-    ssl_certificate     /path/to/fullchain.pem;
-    ssl_certificate_key /path/to/privkey.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:8765;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
-
-4. 手机上打开域名即可，建议「添加到主屏幕」当 App 用。
+4. 访问 `https://你的域名/bm/`，手机可「添加到主屏幕」当 App 用。
 
 ## 数据库表
 
