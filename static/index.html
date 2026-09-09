@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f5f6f7">
+<title>羽毛球培训记录</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div id="gate" class="wrap gate" style="display:none">
+  <div class="card">
+    <h2>请输入访问口令</h2>
+    <input type="text" id="gate-input" placeholder="ACCESS_CODE" autocomplete="off">
+    <div class="note">该口令由服务端环境变量 ACCESS_CODE 设置，输入后保存在本机浏览器。</div>
+    <div style="margin-top:10px"><button class="btn-primary" id="gate-ok">进入</button></div>
+  </div>
+</div>
+
+<div id="app" class="wrap" style="display:none">
+
+  <header class="top">
+    <h1>羽毛球培训记录</h1>
+    <span class="sub" id="today-label"></span>
+  </header>
+
+  <div class="card">
+    <div class="spread" style="margin-bottom:10px">
+      <span class="cal-head" id="range-label" style="margin:0"></span>
+      <button class="btn-mini" id="btn-today">回到本周</button>
+    </div>
+    <div class="row" style="margin-bottom:10px">
+      <button class="chip" data-preset="thisWeek">本周</button>
+      <button class="chip" data-preset="lastWeek">上周</button>
+      <button class="chip" data-preset="thisMonth">本月</button>
+      <button class="chip" data-preset="lastMonth">上月</button>
+      <button class="chip" data-preset="custom">自定义</button>
+    </div>
+    <div class="row" id="custom-range" style="display:none; align-items:flex-end">
+      <div style="flex:1"><label class="field">开始</label><input type="date" id="start-date"></div>
+      <div style="flex:1"><label class="field">结束</label><input type="date" id="end-date"></div>
+    </div>
+    <div id="calendar"></div>
+  </div>
+
+  <div class="card">
+    <button class="btn-primary" id="btn-today-sign">今天报名</button>
+    <div class="note" id="today-state"></div>
+  </div>
+
+  <div class="card">
+    <div class="stats">
+      <div class="stat"><div class="k">本范围参训</div><div class="v" id="stat-range">0</div></div>
+      <div class="stat"><div class="k">累计参训</div><div class="v" id="stat-total">0</div></div>
+      <div class="stat"><div class="k">剩余课时</div><div class="v" id="stat-remain">0</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>参训明细</h2>
+    <ul class="list" id="attendance-list"></ul>
+  </div>
+
+  <div class="card">
+    <h2>缴费记录</h2>
+    <div class="pay-form">
+      <div><label class="field">缴费日期</label><input type="date" id="pay-date"></div>
+      <div><label class="field">金额（元）</label><input type="number" id="pay-amount" inputmode="decimal" placeholder="2400"></div>
+      <div><label class="field">含训练次数</label><input type="number" id="pay-sessions" inputmode="numeric" placeholder="20"></div>
+      <div><label class="field">备注</label><input type="text" id="pay-note" placeholder="选填"></div>
+      <div class="full"><button class="btn-primary" id="btn-pay-add">添加缴费记录</button></div>
+    </div>
+    <ul class="list" id="payment-list"></ul>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>
