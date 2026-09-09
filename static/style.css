@@ -32,6 +32,7 @@ body {
 header.top {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   margin-bottom: 14px;
 }
 
@@ -51,6 +52,8 @@ header.top .me {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  font-size: 18px;
+  font-weight: 600;
 }
 
 header.top .avatar {
