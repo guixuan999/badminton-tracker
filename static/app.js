@@ -15,7 +15,8 @@
     attPreset: "sinceLastPay",
     attStart: "",
     attEnd: "",
-    attDays: []
+    attDays: [],
+    payManage: false
   };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -245,15 +246,39 @@
   function renderPaymentList() {
     var pay = $("payment-list");
     if (!state.payments.length) {
+      state.payManage = false;
       pay.innerHTML = '<li class="empty-tip">还没有缴费记录</li>';
+      $("btn-pay-manage").style.display = "none";
+      $("pay-manage-tip").style.display = "none";
       return;
     }
     pay.innerHTML = state.payments.map(function (p) {
+      var del = state.payManage
+        ? ' <button class="btn-mini danger" data-del-pay="' + p.id + '">删除</button>'
+        : "";
       return '<li><span>' + p.pay_date + " · " + p.sessions + " 次" +
         (p.note ? ' · <span class="meta">' + escapeHTML(p.note) + "</span>" : "") +
-        '</span><span><strong>' + money(p.amount) + "</strong> " +
-        '<button class="btn-mini danger" data-del-pay="' + p.id + '">删除</button></span></li>';
+        '</span><span><strong>' + money(p.amount) + "</strong>" + del + "</span></li>";
     }).join("");
+
+    $("btn-pay-manage").textContent = state.payManage ? "完成" : "管理";
+    $("btn-pay-manage").style.display = state.payments.length ? "" : "none";
+    $("pay-manage-tip").style.display = state.payManage ? "block" : "none";
+  }
+
+  function openPayForm() {
+    $("pay-form").style.display = "grid";
+    $("btn-pay-toggle").textContent = "收起";
+    if (!$("pay-date").value) { $("pay-date").value = state.today; }
+    $("pay-amount").focus();
+  }
+
+  function closePayForm() {
+    $("pay-form").style.display = "none";
+    $("btn-pay-toggle").textContent = "添加";
+    $("pay-amount").value = "";
+    $("pay-sessions").value = "";
+    $("pay-note").value = "";
   }
 
   function escapeHTML(s) {
@@ -355,6 +380,15 @@
       if (btn) { toggleDay(btn.getAttribute("data-del-date")); }
     });
 
+    $("btn-pay-toggle").addEventListener("click", function () {
+      if ($("pay-form").style.display === "none") { openPayForm(); } else { closePayForm(); }
+    });
+    $("btn-pay-cancel").addEventListener("click", closePayForm);
+    $("btn-pay-manage").addEventListener("click", function () {
+      state.payManage = !state.payManage;
+      renderPaymentList();
+    });
+
     $("btn-pay-add").addEventListener("click", function () {
       var payload = {
         date: $("pay-date").value || state.today,
@@ -365,9 +399,7 @@
       if (!payload.amount || !payload.sessions) { toast("请填写金额和次数"); return; }
       request("/api/payment/add", { method: "POST", body: JSON.stringify(payload) })
         .then(function () {
-          $("pay-amount").value = "";
-          $("pay-sessions").value = "";
-          $("pay-note").value = "";
+          closePayForm();
           toast("已添加缴费记录");
           return load();
         })

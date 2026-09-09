@@ -81,15 +81,25 @@
   </div>
 
   <div class="card">
-    <h2>缴费记录</h2>
-    <div class="pay-form">
+    <div class="spread">
+      <h2 style="margin:0">缴费记录</h2>
+      <div class="row" style="gap:6px">
+        <button class="btn-mini" id="btn-pay-manage">管理</button>
+        <button class="btn-mini" id="btn-pay-toggle">添加</button>
+      </div>
+    </div>
+    <div class="pay-form" id="pay-form" style="display:none; margin-top:12px">
       <div><label class="field">缴费日期</label><input type="date" id="pay-date"></div>
       <div><label class="field">金额（元）</label><input type="number" id="pay-amount" inputmode="decimal" placeholder="2400"></div>
       <div><label class="field">含训练次数</label><input type="number" id="pay-sessions" inputmode="numeric" placeholder="20"></div>
       <div><label class="field">备注</label><input type="text" id="pay-note" placeholder="选填"></div>
-      <div class="full"><button class="btn-primary" id="btn-pay-add">添加缴费记录</button></div>
+      <div class="full row" style="gap:8px">
+        <button class="btn-primary" id="btn-pay-add" style="flex:1">保存</button>
+        <button id="btn-pay-cancel">取消</button>
+      </div>
     </div>
     <ul class="list" id="payment-list"></ul>
+    <div class="note" id="pay-manage-tip" style="display:none">管理模式下可删除记录，点「完成」退出。</div>
   </div>
 
 </div>
