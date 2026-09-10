@@ -36,12 +36,6 @@ header.top {
   margin-bottom: 14px;
 }
 
-header.top .right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
 header.top h1 {
   font-size: 18px;
   font-weight: 600;
@@ -63,11 +57,6 @@ header.top .avatar {
   object-fit: cover;
   border: 0.5px solid var(--line);
   background: #fff;
-}
-
-header.top .sub {
-  font-size: 12px;
-  color: var(--muted);
 }
 
 .card {

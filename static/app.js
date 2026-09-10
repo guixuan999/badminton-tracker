@@ -343,7 +343,6 @@
     var label = state.start + " 至 " + state.end;
     var presetName = { thisWeek: "本周", lastWeek: "上周", thisMonth: "本月", lastMonth: "上月", custom: "自定义" };
     $("range-label").textContent = label + "（" + presetName[state.preset] + "）";
-    $("today-label").textContent = state.today + " " + weekdayCN(state.today);
 
     var chips = document.querySelectorAll(".chip:not(.att-chip)");
     for (var i = 0; i < chips.length; i++) {
