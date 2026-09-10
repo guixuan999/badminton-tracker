@@ -21,7 +21,10 @@
     attLocked: {},
     payManage: false,
     pendingPay: null,
-    pendingLock: false
+    pendingLock: false,
+    unlockDate: null,
+    unlockRequired: true,
+    unlockHint: ""
   };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -50,6 +53,7 @@
       if (res.status === 401) { showGate(); throw new Error("unauthorized"); }
       return res.json().then(function (data) {
         if (res.status === 409) { throw new Error("locked"); }
+        if (res.status === 403 && data && data.error === "bad_token") { throw new Error("bad_token"); }
         return data;
       });
     });
@@ -99,6 +103,8 @@
       state.locked = {};
       (data.locked_days || []).forEach(function (d) { state.locked[d] = true; });
       state.lockInfo = data.lock_info || state.lockInfo;
+      state.unlockRequired = data.unlock_required !== false;
+      state.unlockHint = data.unlock_hint || "";
       state.payments = data.payments || [];
       state.summary = data.summary || state.summary;
       render();
@@ -107,8 +113,9 @@
   }
 
   function toggleDay(dateStr) {
+    // 已锁定的记录先走解锁流程，解锁后需要再点一次才会取消
     if (state.locked[dateStr]) {
-      toast("该记录已锁定，无法取消");
+      openUnlock(dateStr);
       return Promise.resolve();
     }
     return request("api/attendance/toggle", {
@@ -121,6 +128,51 @@
     }).catch(function (err) {
       if (err.message === "locked") { toast("该记录已锁定，无法取消"); return load(); }
       throw err;
+    });
+  }
+
+  function openUnlock(dateStr) {
+    if (!state.unlockRequired) { return submitUnlock(dateStr, ""); }
+    state.unlockDate = dateStr;
+    $("unlock-date").textContent = dateStr;
+    $("unlock-input").value = "";
+    $("unlock-err").textContent = "";
+    var hint = $("unlock-hint");
+    if (state.unlockHint) {
+      hint.innerHTML = "口令：<code>" + escapeHTML(state.unlockHint) + "</code>";
+      hint.style.display = "block";
+    } else {
+      hint.style.display = "none";
+    }
+    $("unlock-mask").style.display = "flex";
+    setTimeout(function () { $("unlock-input").focus(); }, 60);
+  }
+
+  function closeUnlock() {
+    $("unlock-mask").style.display = "none";
+    state.unlockDate = null;
+  }
+
+  function submitUnlock(dateStr, token) {
+    var day = dateStr || state.unlockDate;
+    var code = token === undefined ? $("unlock-input").value.trim() : token;
+    if (state.unlockRequired && !code) {
+      $("unlock-err").textContent = "请输入解锁口令";
+      return;
+    }
+    return request("api/attendance/unlock", {
+      method: "POST",
+      body: JSON.stringify({ date: day, token: code })
+    }).then(function (data) {
+      closeUnlock();
+      toast(data.unlocked
+        ? "已解锁 " + data.date + "，再点一次即可取消"
+        : data.date + " 本来就没有锁定");
+      return load();
+    }).catch(function (err) {
+      if (err.message === "bad_token") { $("unlock-err").textContent = "口令不正确"; return; }
+      if (err.message === "unauthorized") { return; }
+      $("unlock-err").textContent = "解锁失败，请重试";
     });
   }
 
@@ -262,7 +314,8 @@
     var actions = $("lock-actions");
 
     if (state.pendingLock) {
-      st.textContent = "将锁定全部未锁定记录，之后界面无法取消。";
+      st.textContent = "将锁定 " + state.today + " 及之前的记录，之后需要口令才能解锁；" +
+        "今天之后提前报的名不受影响。";
       actions.innerHTML =
         '<button class="btn-mini danger" data-lock-confirm>确认锁定</button>' +
         '<button class="btn-mini" data-lock-cancel>取消</button>';
@@ -498,6 +551,15 @@
         method: "POST",
         body: JSON.stringify({ id: ok.getAttribute("data-confirm-pay") })
       }).then(function () { toast("已删除"); return load(); });
+    });
+
+    $("unlock-ok").addEventListener("click", function () { submitUnlock(); });
+    $("unlock-cancel").addEventListener("click", closeUnlock);
+    $("unlock-input").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { submitUnlock(); }
+    });
+    $("unlock-mask").addEventListener("click", function (e) {
+      if (e.target === this) { closeUnlock(); }
     });
 
     $("gate-ok").addEventListener("click", function () {

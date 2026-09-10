@@ -10,6 +10,10 @@ Environment=HOST=127.0.0.1
 Environment=PORT=8765
 # 部署到公网必须设置，否则任何人都能看到缴费记录
 Environment=ACCESS_CODE=改成你自己的口令
+# 解锁已锁定记录用的口令，建议与访问口令不同；留空则回退用 ACCESS_CODE
+Environment=UNLOCK_CODE=改成你的解锁口令
+# 是否在解锁弹框里直接显示口令（1=显示，自用方便；0=隐藏，多人可见时用）
+Environment=SHOW_UNLOCK_CODE=1
 Environment=DB_PATH=/opt/badminton-tracker/data/training.db
 ExecStart=/usr/bin/python3 /opt/badminton-tracker/server.py
 Restart=always

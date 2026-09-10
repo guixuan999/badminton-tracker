@@ -12,8 +12,11 @@
     HOST        监听地址，默认 0.0.0.0
     DB_PATH     SQLite 文件路径，默认 ./data/training.db
     ACCESS_CODE 访问口令；留空表示不做校验（仅建议本机使用）
+    UNLOCK_CODE 解锁已锁定记录的口令；留空则回退使用 ACCESS_CODE
+    SHOW_UNLOCK_CODE  是否在解锁弹框里明示口令，默认 1（明示）；设为 0 则隐藏
 """
 
+import hmac
 import json
 import os
 import re
@@ -28,6 +31,9 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.environ.get("DB_PATH", os.path.join(DATA_DIR, "training.db"))
 ACCESS_CODE = os.environ.get("ACCESS_CODE", "").strip()
+UNLOCK_CODE = os.environ.get("UNLOCK_CODE", "").strip()
+# 是否在解锁弹框里把口令直接显示出来（自用场景图方便；公网多人使用时建议设为 0）
+SHOW_UNLOCK_CODE = os.environ.get("SHOW_UNLOCK_CODE", "1").strip() != "0"
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8765"))
 
@@ -95,6 +101,17 @@ def parse_day(value, default=None):
     if d is None:
         return default
     return d.strftime("%Y-%m-%d")
+
+
+def check_unlock_code(supplied):
+    """校验解锁口令。
+
+    UNLOCK_CODE 未设置时回退用 ACCESS_CODE；两者都没设（本机自用）则直接放行。
+    """
+    expected = UNLOCK_CODE or ACCESS_CODE
+    if not expected:
+        return True
+    return hmac.compare_digest(str(supplied or ""), expected)
 
 
 # ---------- 数据操作 ----------
@@ -165,22 +182,45 @@ def set_attendance(day, signed):
 
 
 def lock_attendance():
-    """把当前所有未锁定的参训记录一次性锁定。
+    """把「今天及之前」所有未锁定的参训记录一次性锁定。
+
+    未来日期（今天之后）的报名**不会**被锁定 —— 那些是提前报的，
+    随时可能临时不去，必须保留取消的能力。
 
     返回 (本次锁定条数, 最近一次锁定时间)。
-    锁定后的记录无法通过界面取消，只能直接改数据库。
-    锁定时点之后新增的报名不受影响，仍可正常取消。
+    锁定后的记录无法通过界面取消，只能走解锁（UNLOCK_CODE）或直接改数据库。
     """
     conn = get_conn()
     try:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cur = conn.execute("UPDATE attendance SET locked = 1 WHERE locked = 0")
+        today = date.today().strftime("%Y-%m-%d")
+        cur = conn.execute(
+            "UPDATE attendance SET locked = 1 WHERE locked = 0 AND day <= ?", (today,)
+        )
         count = cur.rowcount
         if count:
-            conn.execute("INSERT OR REPLACE INTO meta(k, v) VALUES('locked_at', ?)", (now,))
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(k, v) VALUES('locked_at', ?)",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),),
+            )
         conn.commit()
         row = conn.execute("SELECT v FROM meta WHERE k = 'locked_at'").fetchone()
         return count, (row["v"] if row else None)
+    finally:
+        conn.close()
+
+
+def unlock_attendance(day):
+    """解除单条记录的锁定，返回受影响行数。
+
+    只解锁这一条，解锁后该日期恢复为普通已报名，可以再次点击取消。
+    """
+    conn = get_conn()
+    try:
+        cur = conn.execute(
+            "UPDATE attendance SET locked = 0 WHERE day = ? AND locked = 1", (day,)
+        )
+        conn.commit()
+        return cur.rowcount
     finally:
         conn.close()
 
@@ -316,6 +356,12 @@ class Handler(SimpleHTTPRequestHandler):
                     "payments": list_payments(),
                     "summary": build_summary(start, end),
                     "auth_required": bool(ACCESS_CODE),
+                    "unlock_required": bool(UNLOCK_CODE or ACCESS_CODE),
+                    "unlock_hint": (
+                        (UNLOCK_CODE or ACCESS_CODE)
+                        if SHOW_UNLOCK_CODE and (UNLOCK_CODE or ACCESS_CODE)
+                        else ""
+                    ),
                 }
             )
         if path.startswith("/api/"):
@@ -357,6 +403,15 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/attendance/lock":
             count, locked_at = lock_attendance()
             return self._json({"ok": True, "locked_count": count, "locked_at": locked_at})
+
+        if path == "/api/attendance/unlock":
+            day = parse_day(body.get("date"))
+            if not day:
+                return self._json({"error": "日期格式应为 YYYY-MM-DD"}, 400)
+            if not check_unlock_code(body.get("token")):
+                return self._json({"error": "bad_token", "message": "解锁口令不正确"}, 403)
+            n = unlock_attendance(day)
+            return self._json({"ok": True, "date": day, "unlocked": n})
 
         if path == "/api/payment/add":
             pay_date = parse_day(body.get("date"), date.today().strftime("%Y-%m-%d"))
