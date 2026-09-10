@@ -40,6 +40,7 @@ header.top h1 {
   font-size: 18px;
   font-weight: 600;
   margin: 0;
+  color: var(--muted);
 }
 
 header.top .me {
@@ -55,12 +56,12 @@ header.top .me .name {
   font-size: 19px;
   font-weight: 800;
   letter-spacing: .5px;
-  color: #0284c7;
+  color: #1ea7dd;
 }
 
 @supports ((-webkit-background-clip: text) or (background-clip: text)) {
   header.top .me .name {
-    background: linear-gradient(135deg, #4dd4f7 0%, #0ea5e9 45%, #0369a1 100%);
+    background: linear-gradient(135deg, #8ee6ff 0%, #4cc9f0 45%, #1ea7dd 100%);
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
