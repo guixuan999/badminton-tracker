@@ -92,10 +92,27 @@ localStorage 按**协议 + 域名 + 端口**隔离，http 和 https 是两个独
 
 ## 数据库表
 
-- `attendance(day, created_at)` — 参训日期，一天一条，主键为日期
+- `attendance(day, created_at, locked)` — 参训日期，一天一条，主键为日期
 - `payment(id, pay_date, amount, sessions, note)` — 缴费记录
+- `meta(k, v)` — 键值表，目前存 `locked_at`（最近一次锁定时间）
 
 剩余课时 = 缴费记录 `sessions` 之和 − 参训记录总数。
+
+### 记录锁定
+
+参训明细展开后底部有「锁定」按钮，作用是把**当前所有未锁定的参训记录**一次性冻结：
+
+- 锁定后这些记录无法在界面上取消（日历点击和后端接口都会拒绝，返回 409）
+- 锁定后再补报的日期不受影响，仍可正常取消
+- **锁定不可通过界面撤销**，确实需要改动时直接操作数据库：
+
+```bash
+sqlite3 /opt/badminton-tracker/data/training.db
+sqlite> UPDATE attendance SET locked = 0 WHERE day = '2026-08-01';   -- 解锁单条
+sqlite> UPDATE attendance SET locked = 0;                            -- 全部解锁
+```
+
+`locked` 列由 `init_db()` 自动迁移，老库首次用新版本启动时会自动补上，数据不受影响。
 
 ## 备份
 

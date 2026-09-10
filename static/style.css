@@ -176,6 +176,47 @@ label.field { display: block; font-size: 12px; color: var(--muted); margin-botto
 }
 .day .dot { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); margin-top: 3px; }
 
+/* 已锁定：底色更实，右上角带小锁，点击不可取消 */
+.day.locked { background: #cdeadd; border-color: var(--accent-strong); }
+.day .lock-mark { position: absolute; top: 4px; right: 4px; }
+
+.lock-mark {
+  display: inline-block;
+  width: 6px;
+  height: 5px;
+  border-radius: 1px;
+  background: var(--accent-strong);
+  position: relative;
+  flex: none;
+  vertical-align: -1px;
+}
+.lock-mark::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: -3px;
+  width: 4px;
+  height: 4px;
+  border: 1px solid var(--accent-strong);
+  border-bottom: none;
+  border-radius: 3px 3px 0 0;
+}
+
+.lock-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+.lock-actions { display: inline-flex; gap: 6px; flex: none; }
+.locked-tag { display: inline-flex; align-items: center; gap: 4px; color: var(--accent-strong); }
+
 .month-block + .month-block { margin-top: 16px; }
 .month-title { font-size: 13px; font-weight: 600; color: var(--muted); margin: 0 0 8px; }
 

@@ -36,7 +36,8 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS attendance (
     day        TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    locked     INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS payment (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,7 +47,15 @@ CREATE TABLE IF NOT EXISTS payment (
     note      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_payment_date ON payment(pay_date);
+CREATE TABLE IF NOT EXISTS meta (
+    k TEXT PRIMARY KEY,
+    v TEXT NOT NULL
+);
 """
+
+
+class LockedError(Exception):
+    """尝试取消一条已锁定的参训记录"""
 
 
 def get_conn():
@@ -63,6 +72,10 @@ def init_db():
     conn = get_conn()
     try:
         conn.executescript(SCHEMA)
+        # 老库补列：attendance.locked 是后加的，CREATE TABLE IF NOT EXISTS 不会动已有表
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(attendance)")}
+        if "locked" not in cols:
+            conn.execute("ALTER TABLE attendance ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
         conn.commit()
     finally:
         conn.close()
@@ -86,7 +99,7 @@ def parse_day(value, default=None):
 
 # ---------- 数据操作 ----------
 
-def list_attendance(start=None, end=None):
+def list_attendance(start=None, end=None, only_locked=False):
     sql = "SELECT day FROM attendance"
     args = []
     conds = []
@@ -96,6 +109,8 @@ def list_attendance(start=None, end=None):
     if end:
         conds.append("day <= ?")
         args.append(end)
+    if only_locked:
+        conds.append("locked = 1")
     if conds:
         sql += " WHERE " + " AND ".join(conds)
     sql += " ORDER BY day"
@@ -107,16 +122,21 @@ def list_attendance(start=None, end=None):
 
 
 def toggle_attendance(day):
-    """返回操作后的状态: True=已报名, False=已取消"""
+    """返回操作后的状态: True=已报名, False=已取消
+
+    取消已锁定的记录会抛 LockedError。
+    """
     conn = get_conn()
     try:
-        row = conn.execute("SELECT day FROM attendance WHERE day = ?", (day,)).fetchone()
+        row = conn.execute("SELECT day, locked FROM attendance WHERE day = ?", (day,)).fetchone()
         if row:
+            if row["locked"]:
+                raise LockedError(day)
             conn.execute("DELETE FROM attendance WHERE day = ?", (day,))
             state = False
         else:
             conn.execute(
-                "INSERT INTO attendance(day, created_at) VALUES(?, ?)",
+                "INSERT INTO attendance(day, created_at, locked) VALUES(?, ?, 0)",
                 (day, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             )
             state = True
@@ -131,12 +151,48 @@ def set_attendance(day, signed):
     try:
         if signed:
             conn.execute(
-                "INSERT OR IGNORE INTO attendance(day, created_at) VALUES(?, ?)",
+                "INSERT OR IGNORE INTO attendance(day, created_at, locked) VALUES(?, ?, 0)",
                 (day, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             )
         else:
+            row = conn.execute("SELECT locked FROM attendance WHERE day = ?", (day,)).fetchone()
+            if row and row["locked"]:
+                raise LockedError(day)
             conn.execute("DELETE FROM attendance WHERE day = ?", (day,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def lock_attendance():
+    """把当前所有未锁定的参训记录一次性锁定。
+
+    返回 (本次锁定条数, 最近一次锁定时间)。
+    锁定后的记录无法通过界面取消，只能直接改数据库。
+    锁定时点之后新增的报名不受影响，仍可正常取消。
+    """
+    conn = get_conn()
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur = conn.execute("UPDATE attendance SET locked = 1 WHERE locked = 0")
+        count = cur.rowcount
+        if count:
+            conn.execute("INSERT OR REPLACE INTO meta(k, v) VALUES('locked_at', ?)", (now,))
+        conn.commit()
+        row = conn.execute("SELECT v FROM meta WHERE k = 'locked_at'").fetchone()
+        return count, (row["v"] if row else None)
+    finally:
+        conn.close()
+
+
+def lock_info():
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT v FROM meta WHERE k = 'locked_at'").fetchone()
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM attendance WHERE locked = 1"
+        ).fetchone()["c"]
+        return {"locked_at": row["v"] if row else None, "locked_count": count}
     finally:
         conn.close()
 
@@ -255,6 +311,8 @@ class Handler(SimpleHTTPRequestHandler):
                     "ok": True,
                     "today": date.today().strftime("%Y-%m-%d"),
                     "attendance": list_attendance(start, end),
+                    "locked_days": list_attendance(start, end, only_locked=True),
+                    "lock_info": lock_info(),
                     "payments": list_payments(),
                     "summary": build_summary(start, end),
                     "auth_required": bool(ACCESS_CODE),
@@ -276,15 +334,29 @@ class Handler(SimpleHTTPRequestHandler):
             day = parse_day(body.get("date"))
             if not day:
                 return self._json({"error": "日期格式应为 YYYY-MM-DD"}, 400)
-            signed = toggle_attendance(day)
+            try:
+                signed = toggle_attendance(day)
+            except LockedError:
+                return self._json(
+                    {"error": "locked", "date": day, "message": "该记录已锁定，无法取消"}, 409
+                )
             return self._json({"ok": True, "date": day, "signed": signed})
 
         if path == "/api/attendance/set":
             day = parse_day(body.get("date"))
             if not day:
                 return self._json({"error": "日期格式应为 YYYY-MM-DD"}, 400)
-            set_attendance(day, bool(body.get("signed")))
+            try:
+                set_attendance(day, bool(body.get("signed")))
+            except LockedError:
+                return self._json(
+                    {"error": "locked", "date": day, "message": "该记录已锁定，无法取消"}, 409
+                )
             return self._json({"ok": True, "date": day, "signed": bool(body.get("signed"))})
+
+        if path == "/api/attendance/lock":
+            count, locked_at = lock_attendance()
+            return self._json({"ok": True, "locked_count": count, "locked_at": locked_at})
 
         if path == "/api/payment/add":
             pay_date = parse_day(body.get("date"), date.today().strftime("%Y-%m-%d"))

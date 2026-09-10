@@ -7,6 +7,8 @@
   var state = {
     today: "",
     signed: {},
+    locked: {},
+    lockInfo: { locked_at: null, locked_count: 0 },
     payments: [],
     summary: { range_count: 0, total_count: 0, paid_sessions: 0, paid_amount: 0, remaining: 0 },
     preset: "thisWeek",
@@ -16,8 +18,10 @@
     attStart: "",
     attEnd: "",
     attDays: [],
+    attLocked: {},
     payManage: false,
-    pendingPay: null
+    pendingPay: null,
+    pendingLock: false
   };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -44,7 +48,10 @@
     opts.headers = headers(opts.body ? true : false);
     return fetch(url, opts).then(function (res) {
       if (res.status === 401) { showGate(); throw new Error("unauthorized"); }
-      return res.json();
+      return res.json().then(function (data) {
+        if (res.status === 409) { throw new Error("locked"); }
+        return data;
+      });
     });
   }
 
@@ -89,6 +96,9 @@
       state.today = data.today;
       state.signed = {};
       data.attendance.forEach(function (d) { state.signed[d] = true; });
+      state.locked = {};
+      (data.locked_days || []).forEach(function (d) { state.locked[d] = true; });
+      state.lockInfo = data.lock_info || state.lockInfo;
       state.payments = data.payments || [];
       state.summary = data.summary || state.summary;
       render();
@@ -97,6 +107,10 @@
   }
 
   function toggleDay(dateStr) {
+    if (state.locked[dateStr]) {
+      toast("该记录已锁定，无法取消");
+      return Promise.resolve();
+    }
     return request("api/attendance/toggle", {
       method: "POST",
       body: JSON.stringify({ date: dateStr })
@@ -104,6 +118,9 @@
       if (data.signed) { state.signed[dateStr] = true; toast("已报名 " + dateStr); }
       else { delete state.signed[dateStr]; toast("已取消 " + dateStr); }
       return load();
+    }).catch(function (err) {
+      if (err.message === "locked") { toast("该记录已锁定，无法取消"); return load(); }
+      throw err;
     });
   }
 
@@ -111,10 +128,12 @@
     var s = iso(d);
     var cls = "day";
     if (state.signed[s]) { cls += " signed"; }
+    if (state.locked[s]) { cls += " locked"; }
     if (s === state.today) { cls += " today"; }
     if (outside) { cls += " outside"; }
     var dot = state.signed[s] ? '<div class="dot"></div>' : "";
-    return '<button class="' + cls + '" data-date="' + s + '">' + d.getDate() + dot + "</button>";
+    var lock = state.locked[s] ? '<span class="lock-mark" title="已锁定"></span>' : "";
+    return '<button class="' + cls + '" data-date="' + s + '">' + d.getDate() + lock + dot + "</button>";
   }
 
   function renderWeekChunks() {
@@ -226,12 +245,36 @@
     var el = $("attendance-list");
     if (!state.attDays.length) {
       el.innerHTML = '<li class="empty-tip">该时间范围内没有参训记录</li>';
+    } else {
+      el.innerHTML = state.attDays.map(function (d) {
+        var tag = state.attLocked[d]
+          ? '<span class="meta locked-tag"><span class="lock-mark"></span>已锁定</span>'
+          : '<span class="meta">已参训</span>';
+        return "<li><span>" + d + " " + weekdayCN(d) + "</span>" + tag + "</li>";
+      }).join("");
+    }
+    renderLockBar();
+  }
+
+  function renderLockBar() {
+    var info = state.lockInfo || { locked_at: null, locked_count: 0 };
+    var st = $("lock-state");
+    var actions = $("lock-actions");
+
+    if (state.pendingLock) {
+      st.textContent = "将锁定全部未锁定记录，之后界面无法取消。";
+      actions.innerHTML =
+        '<button class="btn-mini danger" data-lock-confirm>确认锁定</button>' +
+        '<button class="btn-mini" data-lock-cancel>取消</button>';
       return;
     }
-    el.innerHTML = state.attDays.map(function (d) {
-      return '<li><span>' + d + " " + weekdayCN(d) + "</span>" +
-        '<button class="btn-mini danger" data-del-date="' + d + '">取消报名</button></li>';
-    }).join("");
+    if (info.locked_count) {
+      st.textContent = "已锁定 " + info.locked_count + " 条" +
+        (info.locked_at ? "（" + info.locked_at.slice(0, 10) + " 锁定）" : "");
+    } else {
+      st.textContent = "尚未锁定，历史记录仍可取消";
+    }
+    actions.innerHTML = '<button class="btn-mini" data-lock-start>锁定</button>';
   }
 
   function loadAttendance() {
@@ -239,6 +282,9 @@
     return request("api/state?start=" + state.attStart + "&end=" + state.attEnd)
       .then(function (data) {
         state.attDays = (data.attendance || []).slice().sort().reverse();
+        state.attLocked = {};
+        (data.locked_days || []).forEach(function (d) { state.attLocked[d] = true; });
+        state.lockInfo = data.lock_info || state.lockInfo;
         renderAttendanceList();
       })
       .catch(function () { /* 未授权时由 gate 处理 */ });
@@ -381,9 +427,30 @@
       toggleDay(state.today);
     });
 
-    $("attendance-list").addEventListener("click", function (e) {
-      var btn = e.target.closest("[data-del-date]");
-      if (btn) { toggleDay(btn.getAttribute("data-del-date")); }
+    $("lock-bar").addEventListener("click", function (e) {
+      if (e.target.closest("[data-lock-start]")) {
+        state.pendingLock = true;
+        renderLockBar();
+        return;
+      }
+      if (e.target.closest("[data-lock-cancel]")) {
+        state.pendingLock = false;
+        renderLockBar();
+        return;
+      }
+      if (e.target.closest("[data-lock-confirm]")) {
+        state.pendingLock = false;
+        request("api/attendance/lock", { method: "POST", body: "{}" })
+          .then(function (data) {
+            toast(data.locked_count
+              ? "已锁定 " + data.locked_count + " 条记录"
+              : "没有需要锁定的记录");
+            return load();
+          })
+          .catch(function (err) {
+            if (err.message !== "unauthorized") { toast("锁定失败"); }
+          });
+      }
     });
 
     $("btn-pay-toggle").addEventListener("click", function () {
