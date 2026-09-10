@@ -45,9 +45,27 @@ header.top h1 {
 header.top .me {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 7px;
   font-size: 18px;
   font-weight: 600;
+}
+
+/* 名字：不用纯黑，走主题绿渐变 */
+header.top .me .name {
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  color: var(--accent-strong);
+}
+
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  header.top .me .name {
+    background: linear-gradient(135deg, #35c191 0%, #1d9e75 45%, #0b5c47 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
 }
 
 header.top .avatar {
