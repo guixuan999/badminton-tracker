@@ -50,17 +50,17 @@ header.top .me {
   font-weight: 600;
 }
 
-/* 名字：不用纯黑，走蓝色渐变 */
+/* 名字：不用纯黑，走天蓝偏青渐变 */
 header.top .me .name {
   font-size: 19px;
   font-weight: 800;
   letter-spacing: .5px;
-  color: #1d4ed8;
+  color: #0284c7;
 }
 
 @supports ((-webkit-background-clip: text) or (background-clip: text)) {
   header.top .me .name {
-    background: linear-gradient(135deg, #60a5fa 0%, #2563eb 45%, #1e3a8a 100%);
+    background: linear-gradient(135deg, #4dd4f7 0%, #0ea5e9 45%, #0369a1 100%);
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
