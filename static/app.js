@@ -249,7 +249,7 @@
       el.innerHTML = state.attDays.map(function (d) {
         var tag = state.attLocked[d]
           ? '<span class="meta locked-tag"><span class="lock-mark"></span>已锁定</span>'
-          : '<span class="meta">已参训</span>';
+          : '<span class="meta">已报名</span>';
         return "<li><span>" + d + " " + weekdayCN(d) + "</span>" + tag + "</li>";
       }).join("");
     }
