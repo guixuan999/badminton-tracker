@@ -30,19 +30,41 @@ python3 server.py
 | `UNLOCK_CODE` | 空 | 解锁已锁定记录的口令；留空则回退用 `ACCESS_CODE` |
 | `SHOW_UNLOCK_CODE` | 1 | 是否在解锁弹框里直接把口令显示出来（自用图方便）。设为 `0` 则隐藏 |
 
-## 部署到云服务器（nginx 子路径 /bm/，与现有站点共存）
+## 部署到云服务器（nginx 独立子域 bm.cypherx.top）
 
-前端所有资源与接口都用**相对路径**，因此既能挂在域名根路径，也能挂在 `/bm/` 这样的子路径，后端无需改动。
+前端所有资源与接口都用**相对路径**，因此挂在域名根路径、挂在 `/bm/` 这样的子路径、或者挂到独立子域，三种方式都能直接用，后端无需改动。目前线上采用的是**独立子域** `bm.cypherx.top`。
 
 1. 上传整个目录到服务器（本项目部署在 `/opt/badminton-tracker`），确认有 Python 3.7+
 
-2. 放好 nginx 片段，并让博客站点引用它：
+2. 建子域站点并发证书（先后顺序很重要，见下方警告）：
 
 ```bash
-sudo cp deploy/nginx-badminton.conf /etc/nginx/snippets/badminton.conf
+sudo cp deploy/nginx-badminton.conf /etc/nginx/sites-available/badminton
+sudo ln -sf /etc/nginx/sites-available/badminton /etc/nginx/sites-enabled/badminton
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
-在博客站点的 `server { }` 块**内**加一行：
+> ⚠️ **先让带 `server_name bm.cypherx.top` 的块生效，再跑 certbot。**
+> 顺序反了会出事：certbot 找不到匹配的 server 块时会"就近"挑中默认站点，
+> 把博客的证书覆盖成新域的（这个坑实际踩过一次，博客 HTTPS 一度报证书不匹配）。
+
+```bash
+sudo certbot --nginx -d bm.cypherx.top     # 提示选 2（Redirect）
+```
+
+> 原理：子域部署时 `proxy_pass http://127.0.0.1:8765;` **结尾不带斜杠**，
+> 请求路径原样透传，`/api/state` 到后端还是 `/api/state`。
+> 这点和子路径部署**正好相反** —— 子路径必须写成 `proxy_pass .../;` 靠结尾斜杠剥前缀，别照抄。
+>
+> 下线：删掉 `/etc/nginx/sites-enabled/badminton` 这个软链接即可，博客配置不受影响。
+
+3. （可选）旧链接兼容：让原来的 `www.cypherx.top/bm/` 自动跳到新子域
+
+```bash
+sudo cp deploy/nginx-badminton-legacy.conf /etc/nginx/snippets/badminton.conf
+```
+
+在博客站点的 `server { }` 块**内**（443 那块）加一行：
 
 ```nginx
 include /etc/nginx/snippets/badminton.conf;
@@ -52,14 +74,9 @@ include /etc/nginx/snippets/badminton.conf;
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-> 原理：`proxy_pass http://127.0.0.1:8765/;` 结尾的斜杠会剥掉 `/bm/` 前缀，
-> 所以 `/bm/api/state` 到后端就是 `/api/state`。
-> 想下线只删那一行 `include` 即可，博客配置一行不改。
->
-> 注意：如果 80 和 443 在**同一个** server 块里（certbot 常见做法，`listen 80;` 与
-> `listen 443 ssl;` 并列），加一次就够；分成两块时才需要各加一行。
+> 不需要兼容旧链接就跳过这步。想彻底让 `/bm/` 回归 404，把 `include` 那行删掉即可，子域不受影响。
 
-3. 配置 systemd 守护（注意 `HOST=127.0.0.1` 让端口只对本机开放）：
+4. 配置 systemd 守护（注意 `HOST=127.0.0.1` 让端口只对本机开放）：
 
 ```bash
 sudo cp deploy/badminton.service /etc/systemd/system/
@@ -68,7 +85,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now badminton
 ```
 
-4. 访问 `https://你的域名/bm/`，首次打开会要求输入 `ACCESS_CODE`（存在浏览器 localStorage，之后免输）。手机可「添加到主屏幕」当 App 用。
+5. 访问 `https://bm.cypherx.top/`，首次打开会要求输入 `ACCESS_CODE`（存在浏览器 localStorage，之后免输）。手机可「添加到主屏幕」当 App 用。
 
 ### ⚠️ 两个部署时容易踩的坑
 
@@ -87,10 +104,14 @@ sudo ufw status                            # 看本机防火墙放行了哪些�
 
 放行：`sudo ufw allow 443/tcp && sudo ufw reload`
 
-**② 从 http 切到 https 后需要重新输一次口令**
+**② 换协议或换域名后，都要重新输一次口令**
 
-localStorage 按**协议 + 域名 + 端口**隔离，http 和 https 是两个独立的源，口令不会自动带过去。
-第一次打开 https 版本时重新输入一次即可，之后照常免输。同理，之前用 http 地址添加的桌面图标要删掉重加。
+localStorage 按**协议 + 域名 + 端口**三者隔离，其中任何一项变了就是一个全新的源，口令不会自动带过去。已经遇到过的两种情况：
+
+- http → https
+- `www.cypherx.top/bm/` → `bm.cypherx.top`（子域是独立源，口令不共享）
+
+重新输入一次即可，之后照常免输。同理，换过地址的桌面图标要删掉重加。
 
 ## 数据库表
 
