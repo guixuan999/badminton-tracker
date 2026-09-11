@@ -339,12 +339,12 @@ details[open] > .fold::after { transform: rotate(-135deg); }
   margin-top: 6px;
 }
 
-.unlock-tip {
+.dialog-tip {
   font-size: 12px;
   color: var(--muted);
   margin-top: 8px;
 }
-.unlock-tip code {
+.dialog-tip code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   background: #f2f4f6;

@@ -24,7 +24,8 @@
     pendingLock: false,
     unlockDate: null,
     unlockRequired: true,
-    unlockHint: ""
+    unlockHint: "",
+    dialog: null
   };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -115,7 +116,7 @@
   function toggleDay(dateStr) {
     // 已锁定的记录先走解锁流程，解锁后需要再点一次才会取消
     if (state.locked[dateStr]) {
-      openUnlock(dateStr);
+      openDialog("unlock", { date: dateStr });
       return Promise.resolve();
     }
     return request("api/attendance/toggle", {
@@ -131,49 +132,74 @@
     });
   }
 
-  function openUnlock(dateStr) {
-    if (!state.unlockRequired) { return submitUnlock(dateStr, ""); }
-    state.unlockDate = dateStr;
-    $("unlock-date").textContent = dateStr;
-    $("unlock-input").value = "";
-    $("unlock-err").textContent = "";
-    var hint = $("unlock-hint");
+  // ---------- 敏感操作口令弹框（解锁报名 / 删除缴费记录共用）----------
+
+  var DIALOG_CFG = {
+    unlock: {
+      title: function (p) { return "解锁 " + p.date + " 的报名"; },
+      okText: "解锁"
+    },
+    deletePay: {
+      title: function (p) { return "删除 " + p.date + " 的缴费记录"; },
+      okText: "删除"
+    }
+  };
+
+  function openDialog(kind, payload) {
+    // 未设置口令（本机自用）时不再询问，直接执行
+    if (!state.unlockRequired) { return submitDialog({ kind: kind, payload: payload }, ""); }
+    state.dialog = { kind: kind, payload: payload };
+    var cfg = DIALOG_CFG[kind];
+    $("dialog-title").textContent = cfg.title(payload);
+    $("dialog-ok").textContent = cfg.okText;
+    $("dialog-input").value = "";
+    $("dialog-err").textContent = "";
+    var hint = $("dialog-hint");
     if (state.unlockHint) {
       hint.innerHTML = "口令：<code>" + escapeHTML(state.unlockHint) + "</code>";
       hint.style.display = "block";
     } else {
       hint.style.display = "none";
     }
-    $("unlock-mask").style.display = "flex";
-    setTimeout(function () { $("unlock-input").focus(); }, 60);
+    $("dialog-mask").style.display = "flex";
+    setTimeout(function () { $("dialog-input").focus(); }, 60);
   }
 
-  function closeUnlock() {
-    $("unlock-mask").style.display = "none";
-    state.unlockDate = null;
+  function closeDialog() {
+    $("dialog-mask").style.display = "none";
+    state.dialog = null;
   }
 
-  function submitUnlock(dateStr, token) {
-    var day = dateStr || state.unlockDate;
-    var code = token === undefined ? $("unlock-input").value.trim() : token;
-    if (state.unlockRequired && !code) {
-      $("unlock-err").textContent = "请输入解锁口令";
-      return;
+  function submitDialog(dialog, code) {
+    var d = dialog || state.dialog;
+    if (!d) { return Promise.resolve(); }
+    var token = code === undefined ? $("dialog-input").value.trim() : code;
+    if (state.unlockRequired && !token) {
+      $("dialog-err").textContent = "请输入口令";
+      return Promise.resolve();
     }
-    return request("api/attendance/unlock", {
-      method: "POST",
-      body: JSON.stringify({ date: day, token: code })
-    }).then(function (data) {
-      closeUnlock();
-      toast(data.unlocked
-        ? "已解锁 " + data.date + "，再点一次即可取消"
-        : data.date + " 本来就没有锁定");
-      return load();
-    }).catch(function (err) {
-      if (err.message === "bad_token") { $("unlock-err").textContent = "口令不正确"; return; }
-      if (err.message === "unauthorized") { return; }
-      $("unlock-err").textContent = "解锁失败，请重试";
-    });
+    var url = d.kind === "unlock" ? "api/attendance/unlock" : "api/payment/delete";
+    var body = d.kind === "unlock"
+      ? { date: d.payload.date, token: token }
+      : { id: d.payload.id, token: token };
+
+    return request(url, { method: "POST", body: JSON.stringify(body) })
+      .then(function (data) {
+        closeDialog();
+        if (d.kind === "unlock") {
+          toast(data.unlocked
+            ? "已解锁 " + data.date + "，再点一次即可取消"
+            : data.date + " 本来就没有锁定");
+        } else {
+          toast("已删除缴费记录");
+        }
+        return load();
+      })
+      .catch(function (err) {
+        if (err.message === "bad_token") { $("dialog-err").textContent = "口令不正确"; return; }
+        if (err.message === "unauthorized") { return; }
+        $("dialog-err").textContent = "操作失败，请重试";
+      });
   }
 
   function dayCell(d, outside) {
@@ -540,20 +566,23 @@
       }
       var ok = e.target.closest("[data-confirm-pay]");
       if (!ok) { return; }
+      var pid = ok.getAttribute("data-confirm-pay");
+      var pay = null;
+      for (var i = 0; i < state.payments.length; i++) {
+        if (String(state.payments[i].id) === pid) { pay = state.payments[i]; break; }
+      }
       state.pendingPay = null;
-      request("api/payment/delete", {
-        method: "POST",
-        body: JSON.stringify({ id: ok.getAttribute("data-confirm-pay") })
-      }).then(function () { toast("已删除"); return load(); });
+      renderPaymentList();
+      openDialog("deletePay", { id: pid, date: pay ? pay.pay_date : "" });
     });
 
-    $("unlock-ok").addEventListener("click", function () { submitUnlock(); });
-    $("unlock-cancel").addEventListener("click", closeUnlock);
-    $("unlock-input").addEventListener("keydown", function (e) {
-      if (e.key === "Enter") { submitUnlock(); }
+    $("dialog-ok").addEventListener("click", function () { submitDialog(); });
+    $("dialog-cancel").addEventListener("click", closeDialog);
+    $("dialog-input").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { submitDialog(); }
     });
-    $("unlock-mask").addEventListener("click", function (e) {
-      if (e.target === this) { closeUnlock(); }
+    $("dialog-mask").addEventListener("click", function (e) {
+      if (e.target === this) { closeDialog(); }
     });
 
     $("gate-ok").addEventListener("click", function () {

@@ -105,15 +105,15 @@
 
 </div>
 
-<div class="mask" id="unlock-mask" style="display:none">
+<div class="mask" id="dialog-mask" style="display:none">
   <div class="dialog">
-    <h3>解锁 <span id="unlock-date"></span> 的报名</h3>
-    <input type="password" id="unlock-input" placeholder="解锁口令" autocomplete="off">
-    <div class="unlock-tip" id="unlock-hint" style="display:none"></div>
-    <div class="err" id="unlock-err"></div>
+    <h3 id="dialog-title"></h3>
+    <input type="password" id="dialog-input" placeholder="口令" autocomplete="off">
+    <div class="dialog-tip" id="dialog-hint" style="display:none"></div>
+    <div class="err" id="dialog-err"></div>
     <div class="dialog-actions">
-      <button id="unlock-cancel">取消</button>
-      <button class="btn-primary" id="unlock-ok">解锁</button>
+      <button id="dialog-cancel">取消</button>
+      <button class="btn-primary" id="dialog-ok">确定</button>
     </div>
   </div>
 </div>

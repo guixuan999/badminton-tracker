@@ -430,6 +430,8 @@ class Handler(SimpleHTTPRequestHandler):
                 pid = int(body.get("id"))
             except (TypeError, ValueError):
                 return self._json({"error": "id 无效"}, 400)
+            if not check_unlock_code(body.get("token")):
+                return self._json({"error": "bad_token", "message": "口令不正确"}, 403)
             delete_payment(pid)
             return self._json({"ok": True, "id": pid})
 
