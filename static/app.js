@@ -457,12 +457,6 @@
       if (state.attPreset === "custom") { loadAttendance(); }
     });
 
-    $("btn-today").addEventListener("click", function () {
-      state.preset = "thisWeek";
-      computeRange("thisWeek");
-      load();
-    });
-
     $("start-date").addEventListener("change", function () {
       if (state.preset === "custom") { computeRange("custom"); load(); }
     });

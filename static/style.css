@@ -26,18 +26,18 @@ body {
 .wrap {
   max-width: 560px;
   margin: 0 auto;
-  padding: 16px 14px 48px;
+  padding: 10px 14px 48px;
 }
 
 header.top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 header.top h1 {
-  font-size: 18px;
+  font-size: 14px;
   font-weight: 600;
   margin: 0;
   color: #9ca3af;
@@ -47,13 +47,13 @@ header.top .me {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 600;
 }
 
 /* 名字：不用纯黑，走天蓝偏青渐变 */
 header.top .me .name {
-  font-size: 19px;
+  font-size: 16px;
   font-weight: 800;
   letter-spacing: .5px;
   color: #1ea7dd;
