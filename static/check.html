@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>核对拍摄时间</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  /* 这个页面是个自包含的诊断工具，只用到 style.css 的设计变量 */
+  .drop {
+    border: 1.5px dashed var(--line);
+    border-radius: 12px;
+    padding: 26px 14px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.7;
+    cursor: pointer;
+    transition: .15s;
+  }
+  .drop.hot { border-color: var(--accent); background: var(--accent-bg); color: var(--accent-strong); }
+  .drop b { color: var(--text); }
+
+  .urlrow { display: flex; gap: 8px; margin-top: 12px; }
+  .urlrow input { flex: 1; min-width: 0; }
+
+  .rlist { margin-top: 16px; }
+  .ritem {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    background: #fff;
+  }
+  .rname {
+    font-size: 13px;
+    font-weight: 600;
+    word-break: break-all;
+    margin-bottom: 6px;
+  }
+  .rname .rmeta { font-weight: 400; color: var(--muted); font-size: 11px; margin-left: 6px; }
+  .rrow { display: flex; font-size: 12px; line-height: 1.9; }
+  .rrow .k { color: var(--muted); width: 92px; flex: none; }
+  .rrow .v { word-break: break-all; }
+  .rrow .v.mono { font-family: ui-monospace, Consolas, monospace; }
+  .verdict {
+    margin-top: 8px;
+    font-size: 12px;
+    line-height: 1.7;
+    padding: 6px 9px;
+    border-radius: 7px;
+  }
+  .v-ok   { background: #eef8f0; color: #22694a; }
+  .v-warn { background: #fdf6e6; color: #8a6100; }
+  .v-bad  { background: #fbeeee; color: #9b2c2c; }
+  .v-info { background: #f2f3f5; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="navrow">
+    <a href="./">训练记录</a>
+    <a href="videos.html">训练视频</a>
+    <a href="check.html" class="active">核对时间</a>
+  </nav>
+
+  <h1>核对拍摄时间</h1>
+
+  <p class="note" style="margin-bottom:14px">
+    把视频文件拖进来，直接读它<b>内部</b>记录的拍摄时间。<br>
+    判定依据：拍摄时间写在文件内容里（跟着文件走），文件修改时间会随复制/转存变化。
+    两者差得很远 = 内部时间是真拍摄时间；几乎相同 = 内部时间只是生成文件的时刻。
+  </p>
+
+  <div class="drop" id="drop">
+    <b>拖视频文件到这里</b>，或点击选择<br>
+    支持 mp4 / mov / m4v / webm，可多选
+  </div>
+  <input type="file" id="files" accept="video/*,.mp4,.mov,.m4v,.webm,.mkv" multiple hidden>
+
+  <div class="urlrow">
+    <input type="text" id="url" placeholder="或粘贴视频地址（只取头尾几 MB）">
+    <button class="btn-mini" id="btn-url">读取</button>
+  </div>
+
+  <div class="rlist" id="list"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var MP4_EPOCH_MS = 2082844800000;   // 1904-01-01 → 1970-01-01
+  var WEBM_EPOCH_MS = 978307200000;   // 2001-01-01 → 1970-01-01
+  var HEAD = 2 * 1024 * 1024;
+  var TAIL = 16 * 1024 * 1024;
+  var NEAR = 5 * 60 * 1000;           // 相差 5 分钟内就算「几乎相同」
+
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = function (s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  };
+
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function fmt(d) {
+    if (!(d instanceof Date) || isNaN(d.getTime())) { return "—"; }
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+      " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+  }
+  function fmtSize(n) {
+    if (!n && n !== 0) { return "—"; }
+    var mb = n / 1048576;
+    return mb >= 1 ? mb.toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+  }
+  function fmtDur(sec) {
+    if (!isFinite(sec) || sec <= 0) { return "—"; }
+    var s = Math.round(sec), m = Math.floor(s / 60);
+    return m + ":" + pad(s % 60);
+  }
+
+  // ---------- 时间戳解析（与 tools/check_shot.py 的实现一致）----------
+
+  function secsToDate(secs) {
+    if (!secs) { return null; }
+    var d = new Date(secs * 1000 - MP4_EPOCH_MS);
+    if (isNaN(d.getTime()) || d.getFullYear() < 1990) { return null; }
+    // mvhd 规范上写 UTC，但不少安卓机把本地时间当 UTC 写。
+    // 按 UTC 解释出来是未来（录像不可能在未来）就改按本地墙上时间理解
+    if (d.getTime() > Date.now() + 60000) {
+      d = new Date(d.getTime() + d.getTimezoneOffset() * 60000);
+    }
+    if (isNaN(d.getTime()) || d.getFullYear() < 1990 || d.getTime() > Date.now() + 60000) {
+      return null;
+    }
+    return d;
+  }
+
+  function scanMvhd(buf) {
+    var view = new DataView(buf);
+    var u8 = new Uint8Array(buf);
+    for (var i = 0; i + 16 <= u8.length; i++) {
+      if (u8[i] !== 0x6d || u8[i + 1] !== 0x76 || u8[i + 2] !== 0x68 || u8[i + 3] !== 0x64) {
+        continue;
+      }
+      var off = i + 8;
+      if (u8[i + 4] === 1) {
+        if (off + 8 > u8.length) { continue; }
+        var s64 = view.getUint32(off) * 4294967296 + view.getUint32(off + 4);
+        var d64 = secsToDate(s64);
+        if (d64) { return d64; }
+      } else if (off + 4 <= u8.length) {
+        var d32 = secsToDate(view.getUint32(off));
+        if (d32) { return d32; }
+      }
+    }
+    return null;
+  }
+
+  function readVint(buf, off) {
+    if (off >= buf.length || buf[off] === 0) { return null; }
+    var first = buf[off], len = 1, mask = 0x80;
+    while (!(first & mask)) {
+      mask >>= 1; len++;
+      if (len > 8) { return null; }
+    }
+    if (off + len > buf.length) { return null; }
+    var val = first & (mask - 1);
+    for (var k = 1; k < len; k++) { val = val * 256 + buf[off + k]; }
+    return { val: val, len: len };
+  }
+
+  function scanWebm(buf) {
+    for (var i = 0; i + 3 < buf.length; i++) {
+      if (buf[i] !== 0x44 || buf[i + 1] !== 0x61) { continue; }
+      var sz = readVint(buf, i + 2);
+      if (!sz || sz.val !== 8) { continue; }
+      var start = i + 2 + sz.len;
+      if (start + 8 > buf.length) { continue; }
+      var ns = 0, neg = buf[start] & 0x80;
+      for (var k = 0; k < 8; k++) { ns = ns * 256 + buf[start + k]; }
+      if (neg) { continue; }
+      var d = new Date(ns / 1e6 + WEBM_EPOCH_MS);
+      if (!isNaN(d.getTime()) && d.getFullYear() >= 1990 && d.getTime() <= Date.now()) {
+        return d;
+      }
+    }
+    return null;
+  }
+
+  /** 在若干段字节里找内部时间，返回 { when, kind } */
+  function pickTime(windows) {
+    for (var i = 0; i < windows.length; i++) {
+      var d = scanMvhd(windows[i]);
+      if (d) { return { when: d, kind: "mvhd" }; }
+    }
+    for (var j = 0; j < windows.length; j++) {
+      var w = scanWebm(windows[j]);
+      if (w) { return { when: w, kind: "DateUTC" }; }
+    }
+    return { when: null, kind: "" };
+  }
+
+  function sliceBuffer(blob, start, end) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(fr.result); };
+      fr.onerror = function () { reject(new Error("读取失败")); };
+      fr.readAsArrayBuffer(blob.slice(start, end));
+    });
+  }
+
+  function windowsOfFile(file) {
+    var headLen = Math.min(file.size, HEAD);
+    return sliceBuffer(file, 0, headLen).then(function (head) {
+      if (file.size <= headLen) { return [head]; }
+      var tailLen = Math.min(file.size, TAIL);
+      return sliceBuffer(file, file.size - tailLen, file.size).then(function (tail) {
+        return [head, tail];
+      });
+    });
+  }
+
+  function windowsOfUrl(url) {
+    return fetch(url, { headers: { Range: "bytes=0-" + (HEAD - 1) } })
+      .then(function (r) {
+        var total = 0;
+        var cr = r.headers.get("Content-Range");
+        if (cr && cr.indexOf("/") >= 0) { total = parseInt(cr.split("/")[1], 10) || 0; }
+        if (!total) { total = parseInt(r.headers.get("Content-Length") || "0", 10) || 0; }
+        var partial = r.status === 206;
+        return r.arrayBuffer().then(function (head) {
+          if (!partial || total <= head.byteLength) { return [head]; }
+          var n = Math.min(total, TAIL);
+          return fetch(url, { headers: { Range: "bytes=-" + n } })
+            .then(function (r2) { return r2.arrayBuffer(); })
+            .then(function (tail) { return [head, tail]; })
+            .catch(function () { return [head]; });
+        });
+      });
+  }
+
+  /** 顺手读一下时长和分辨率，用来确认文件本身是完好的 */
+  function probePlayable(file) {
+    return new Promise(function (resolve) {
+      var url = URL.createObjectURL(file);
+      var v = document.createElement("video");
+      var done = false;
+      var t = setTimeout(function () { finish(null); }, 8000);
+      function finish(res) {
+        if (done) { return; }
+        done = true;
+        clearTimeout(t);
+        try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ }
+        resolve(res);
+      }
+      v.preload = "metadata";
+      v.muted = true;
+      v.onloadedmetadata = function () {
+        finish({ duration: v.duration, w: v.videoWidth, h: v.videoHeight });
+      };
+      v.onerror = function () { finish(null); };
+      v.src = url;
+    });
+  }
+
+  // ---------- 渲染 ----------
+
+  function render(name, size, inner, fileTime, extra) {
+    var box = document.createElement("div");
+    box.className = "ritem";
+
+    var verdict, cls;
+    if (!inner.when) {
+      cls = "v-bad";
+      verdict = "文件里没有拍摄时间。WebM 类容器本身就不写，或者被重新编码/转发时抹掉了 —— " +
+        "这种情况只能按文件修改时间判断，不保证准确。";
+    } else if (fileTime && Math.abs(inner.when.getTime() - fileTime.getTime()) <= NEAR) {
+      cls = "v-warn";
+      verdict = "文件里的时间跟文件修改时间几乎相同，说明它只是<b>生成这个文件的时刻</b>，" +
+        "不是真正的拍摄时间 —— 典型是压缩上传、或微信转发重新编码后的产物。";
+    } else {
+      cls = "v-ok";
+      verdict = "文件里的时间是 <b>" + esc(fmt(inner.when)) + "</b>，与文件修改时间" +
+        (fileTime ? "相差 " + Math.round(Math.abs(inner.when - fileTime) / 86400000) + " 天" : "不同") +
+        "。转存不会改变文件内部的时间，所以这就是拍摄时间。";
+    }
+
+    box.innerHTML =
+      '<div class="rname">' + esc(name) +
+        '<span class="rmeta">' + esc(fmtSize(size)) + (extra ? " · " + esc(extra) : "") + "</span></div>" +
+      '<div class="rrow"><span class="k">文件里的时间</span><span class="v mono">' +
+        esc(inner.when ? fmt(inner.when) + (inner.kind ? "  [" + inner.kind + "]" : "") : "读不到") +
+        "</span></div>" +
+      '<div class="rrow"><span class="k">文件修改时间</span><span class="v mono">' +
+        esc(fileTime ? fmt(fileTime) : "—") + "</span></div>" +
+      '<div class="verdict ' + cls + '">' + verdict + "</div>";
+    $("list").insertBefore(box, $("list").firstChild);
+  }
+
+  function handleFile(file) {
+    windowsOfFile(file).then(function (windows) {
+      var inner = pickTime(windows);
+      return probePlayable(file).then(function (meta) {
+        var extra = meta
+          ? fmtDur(meta.duration) + (meta.w ? " · " + meta.w + "×" + meta.h : "")
+          : "无法解码";
+        render(file.name, file.size, inner, new Date(file.lastModified), extra);
+      });
+    }).catch(function (err) {
+      render(file.name, file.size, { when: null, kind: "" }, new Date(file.lastModified),
+        "读取失败：" + err.message);
+    });
+  }
+
+  function handleUrl(url) {
+    url = (url || "").trim();
+    if (!url) { return; }
+    var btn = $("btn-url");
+    btn.disabled = true;
+    btn.textContent = "读取中";
+    windowsOfUrl(url).then(function (windows) {
+      var inner = pickTime(windows);
+      render(url.split("/").pop().split("?")[0], null, inner, null, "来自服务器");
+    }).catch(function (err) {
+      render(url.split("/").pop().split("?")[0], null, { when: null, kind: "" }, null,
+        "取不到：" + (err.message || err));
+    }).then(function () {
+      btn.disabled = false;
+      btn.textContent = "读取";
+    });
+  }
+
+  // ---------- 交互 ----------
+
+  $("drop").addEventListener("click", function () { $("files").click(); });
+  $("files").addEventListener("change", function () {
+    Array.prototype.forEach.call(this.files, handleFile);
+    this.value = "";
+  });
+  ["dragenter", "dragover"].forEach(function (ev) {
+    $("drop").addEventListener(ev, function (e) {
+      e.preventDefault();
+      $("drop").classList.add("hot");
+    });
+  });
+  ["dragleave", "drop"].forEach(function (ev) {
+    $("drop").addEventListener(ev, function (e) {
+      e.preventDefault();
+      $("drop").classList.remove("hot");
+    });
+  });
+  $("drop").addEventListener("drop", function (e) {
+    var files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files.length) {
+      Array.prototype.forEach.call(files, handleFile);
+    }
+  });
+  $("btn-url").addEventListener("click", function () { handleUrl($("url").value); });
+  $("url").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { handleUrl(this.value); }
+  });
+})();
+</script>
+</body>
+</html>

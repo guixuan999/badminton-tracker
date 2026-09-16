@@ -29,12 +29,14 @@
   <nav class="navrow">
     <a href="./">训练记录</a>
     <a href="videos.html" class="active">训练视频</a>
+    <a href="check.html">核对时间</a>
   </nav>
 
   <div class="card">
     <div class="vmeta">
       <span id="vstats"></span>
       <span class="vacts">
+        <button class="btn-mini" id="btn-resync" style="display:none">重认拍摄时间</button>
         <button class="btn-mini" id="btn-upload">上传</button>
         <button class="btn-mini" id="btn-manage">管理</button>
       </span>
@@ -69,6 +71,7 @@
       </div>
 
       <div class="tipbox" id="up-tip"></div>
+      <div class="shotline" id="up-shot" style="display:none"></div>
       <ul class="uplist" id="up-list"></ul>
 
       <div class="row" style="gap:8px; margin-top:10px">

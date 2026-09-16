@@ -64,6 +64,45 @@ select {
 .uplist .ubar { height: 3px; border-radius: 2px; background: #eef0f2; margin-top: 6px; overflow: hidden; }
 .uplist .ubar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
 
+/* 队列上方那行「识别到的拍摄时间」 */
+.shotline {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--accent-strong);
+  background: var(--accent-bg);
+  border-radius: 8px;
+  padding: 7px 10px;
+  margin-top: 8px;
+}
+
+/* 队列行里那一小行：拍摄时间按钮 + 来源 + 体积 */
+.uplist .usub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+.ushot {
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+}
+.ushot:active { background: #f0f1f3; }
+.ushot.busy { border-style: dashed; color: var(--muted); cursor: default; }
+.usrc { color: #9aa0a6; }
+
+.uedit { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+.uedit input { flex: 1; min-width: 0; font-size: 13px; padding: 4px 6px; }
+.uedit button { flex: none; }
+
 /* ---------- 时间线 ---------- */
 
 .tl-day { position: relative; padding-left: 20px; margin-bottom: 16px; }
@@ -167,7 +206,7 @@ select {
 .vcard .vsub { font-size: 11px; color: var(--muted); margin-top: 4px; }
 .vcard .vsub .cut { color: var(--accent-strong); }
 
-.vcard .vadm { display: flex; gap: 6px; padding: 0 9px 9px; }
+.vcard .vadm { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 9px 9px; }
 /* 编辑时铺满整行，148px 的格子里塞不下几个输入框 */
 .vcard.editing { grid-column: 1 / -1; cursor: default; }
 .vcard.editing:active { background: var(--card); }

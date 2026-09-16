@@ -101,6 +101,30 @@
   }
 
   var toastTimer = null;
+  /** 复制文本。clipboard API 在非 HTTPS 下不可用，退回 execCommand。 */
+  function copyText(text) {
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (err) { ok = false; }
+      document.body.removeChild(ta);
+      toast(ok ? "直链已复制到剪贴板" : "复制失败：" + text);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        toast("直链已复制到剪贴板");
+      }).catch(fallback);
+    } else {
+      fallback();
+    }
+  }
+
   function toast(msg) {
     var el = $("toast");
     el.textContent = msg;
@@ -152,6 +176,7 @@
       $("vstats").textContent = txt;
     }
     $("btn-manage").textContent = state.manage ? "完成" : "管理";
+    $("btn-resync").style.display = state.manage ? "" : "none";
   }
 
   function renderTimeline() {
@@ -206,6 +231,7 @@
     }
     var adm = state.manage
       ? '<div class="vadm"><button class="btn-mini" data-edit="' + v.id + '">编辑</button>' +
+        '<button class="btn-mini" data-link="' + v.id + '">直链</button>' +
         '<button class="btn-mini danger" data-del="' + v.id + '">删除</button></div>'
       : "";
 
@@ -559,23 +585,188 @@
 
   // ---------- 上传队列 ----------
 
-  function shotAtFor(file, dateOverride) {
-    var d = new Date(file.lastModified || Date.now());
-    if (isNaN(d.getTime())) { d = new Date(); }
-    var day = dateOverride ||
-      (d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()));
-    return day + " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":00";
+  // ---------- 拍摄时间的识别 ----------
+
+  // 1904-01-01 → 1970-01-01 的毫秒数。MP4 的时间戳以 1904 为基准
+  var MP4_EPOCH_MS = 2082844800000;
+
+  function readSlice(file, start, end) {
+    return new Promise(function (resolve) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(new Uint8Array(fr.result)); };
+      fr.onerror = function () { resolve(null); };
+      fr.readAsArrayBuffer(file.slice(start, end));
+    });
   }
+
+  /** 在 buf 里找 mvhd box，取出 1904 基准的秒数；找不到返回 0 */
+  function scanMvhd(buf) {
+    if (!buf || buf.length < 16) { return 0; }
+    var view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    for (var i = 0; i + 16 <= buf.length; i++) {
+      // 找 "mvhd"
+      if (buf[i] !== 0x6d || buf[i + 1] !== 0x76 || buf[i + 2] !== 0x68 || buf[i + 3] !== 0x64) {
+        continue;
+      }
+      var off = i + 8;              // 跳过 "mvhd" 之后的 version(1) + flags(3)
+      if (buf[i + 4] === 1) {
+        if (off + 8 > buf.length) { continue; }
+        var s64 = view.getUint32(off) * 4294967296 + view.getUint32(off + 4);
+        if (s64 > 0) { return s64; }
+      } else if (off + 4 <= buf.length) {
+        var s32 = view.getUint32(off);
+        if (s32 > 0) { return s32; }
+      }
+    }
+    return 0;
+  }
+
+  /**
+   * 读出视频文件里记录的拍摄时间，读不到返回 null。
+   *
+   * 为什么不直接用 file.lastModified：那是**文件系统**的修改时间。文件一旦被复制、
+   * 下载、或经微信/网盘转存，它就变成「转存那一刻」—— 视频于是全被归到今天。
+   * 拍摄时间写在容器（moov/mvhd）里，跟着文件内容走，转存不会丢。
+   *
+   * moov 可能在开头（faststart）也可能在末尾，所以头尾各扫一块；
+   * 用 slice 只读几 MB，不会把整个视频读进内存。
+   */
+  function readCaptureTime(file) {
+    var HEAD = Math.min(file.size, 2 * 1024 * 1024);
+    return readSlice(file, 0, HEAD).then(function (head) {
+      var secs = scanMvhd(head);
+      if (secs || file.size <= HEAD) { return secs; }
+      var TAIL = Math.min(file.size, 16 * 1024 * 1024);
+      return readSlice(file, file.size - TAIL, file.size).then(scanMvhd);
+    }).then(function (secs) {
+      if (!secs) { return null; }
+      var ms = secs * 1000 - MP4_EPOCH_MS;
+      var d = new Date(ms);
+      // mvhd 规范上写 UTC，但不少安卓机直接把本地时间当 UTC 写进去。
+      // 按 UTC 解释出来居然在未来（录像不可能发生在未来），就改按本地墙上时间理解
+      if (d.getTime() > Date.now() + 60000) {
+        d = new Date(ms + new Date(ms).getTimezoneOffset() * 60000);
+      }
+      if (isNaN(d.getTime()) || d.getFullYear() < 1990 || d.getTime() > Date.now() + 60000) {
+        return null;
+      }
+      return d;
+    }).catch(function () { return null; });
+  }
+
+  function fileTime(file) {
+    var d = new Date(file.lastModified || Date.now());
+    return isNaN(d.getTime()) ? new Date() : d;
+  }
+
+  function shotString(d) {
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+      " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":00";
+  }
+
+  /** 队列行里显示的拍摄时间。直接格式化 shotAt（真正会被上传的值），
+      不要用识别出来的 Date —— 手工改过之后两者就不一样了。 */
+  function fmtShotAt(str) {
+    if (!str || str.length < 16) { return "未设置"; }
+    var p = str.slice(0, 10).split("-");
+    return (+p[1]) + "月" + (+p[2]) + "日 " + str.slice(11, 16);
+  }
+
+  function parseShotAtString(str) {
+    var d = String(str || "").slice(0, 10).split("-");
+    var t = String(str || "").slice(11, 19).split(":");
+    return new Date(+d[0], +d[1] - 1, +d[2], +t[0] || 0, +t[1] || 0, +t[2] || 0);
+  }
+
+  /**
+   * 把拍摄时间写回压缩产物的 mvhd 里。
+   *
+   * MediaRecorder 输出的文件是从头新建的，mvhd.creation_time 写的是「编码那一刻」，
+   * 跟原始拍摄时间毫无关系 —— 实测录一段 640x360 的 MP4，creation_time 就是当前时刻；
+   * WebM 干脆没有 mvhd。不补这一刀，存到服务器上的文件就再也看不出是什么时候拍的了。
+   *
+   * 只改 creation_time / modification_time 这两组字节，不动任何跟解码、时长、采样表
+   * 有关的数据，所以不影响播放。
+   */
+  function patchCaptureTime(blob, when) {
+    if (!blob || !/mp4/i.test(blob.type) || !(when instanceof Date) || isNaN(when.getTime())) {
+      return Promise.resolve(blob);
+    }
+    var HEAD = Math.min(blob.size, 4 * 1024 * 1024);
+    return blob.slice(0, HEAD).arrayBuffer().then(function (buf) {
+      var u8 = new Uint8Array(buf);
+      var pos = -1;
+      for (var i = 0; i + 16 <= u8.length; i++) {
+        if (u8[i] === 0x6d && u8[i + 1] === 0x76 && u8[i + 2] === 0x68 && u8[i + 3] === 0x64) {
+          pos = i;
+          break;
+        }
+      }
+      if (pos < 0) { return blob; }
+      var ver = u8[pos + 4];
+      var off = pos + 8;
+      var width = ver === 1 ? 8 : 4;
+      if (off + width * 2 > u8.length) { return blob; }
+
+      var secs = Math.floor(when.getTime() / 1000) + MP4_EPOCH_MS / 1000;
+      var copy = buf.slice(0);          // 复制一份再改，别动原始 buffer
+      var view = new DataView(copy);
+      var hi = Math.floor(secs / 4294967296);
+      var lo = secs >>> 0;
+      if (ver === 1) {
+        view.setUint32(off, hi); view.setUint32(off + 4, lo);
+        view.setUint32(off + 8, hi); view.setUint32(off + 12, lo);
+      } else {
+        view.setUint32(off, lo); view.setUint32(off + 4, lo);
+      }
+      return new Blob([copy, blob.slice(copy.byteLength)], { type: blob.type });
+    }).catch(function () { return blob; });
+  }
+
+  function findQueueItem(uid) {
+    for (var i = 0; i < state.queue.length; i++) {
+      if (String(state.queue[i].uid) === String(uid)) { return state.queue[i]; }
+    }
+    return null;
+  }
+
+  var detectQueue = [];
+  var detecting = false;
+
+  /** 串行识别，避免同时读好几个大文件把手机拖死 */
+  function runDetection() {
+    if (detecting) { return; }
+    var item = detectQueue.shift();
+    if (!item) { return; }
+    detecting = true;
+    readCaptureTime(item.file).then(function (d) {
+      if (d) { item.shot = d; item.shotFrom = "meta"; }
+    }).catch(function () { /* 读不出来就用文件时间兜着 */ }).then(function () {
+      item.shotBusy = false;
+      detecting = false;
+      if (!item.shotPinned) { applyFormToQueue(); }
+      renderQueue();
+      runDetection();
+    });
+  }
+
+  var uidSeq = 0;
 
   function pickFiles(files) {
     if (!files || !files.length) { return; }
     Array.prototype.forEach.call(files, function (f) {
-      state.queue.push({
+      var item = {
+        uid: ++uidSeq,
         file: f,
         title: f.name.replace(/\.[^.]+$/, ""),
         note: "",
         quality: $("up-quality").value,
-        shotAt: shotAtFor(f, $("up-date").value),
+        // 先用文件修改时间垫着，识别出真实拍摄时间后覆盖
+        shot: fileTime(f),
+        shotFrom: "file",
+        shotPinned: false,
+        shotBusy: true,
+        shotEdit: null,
         duration: 0,
         cover: null,
         blob: null,
@@ -588,22 +779,30 @@
         percent: 0,
         eta: 0,
         error: ""
-      });
+      };
+      state.queue.push(item);
+      detectQueue.push(item);
     });
     applyFormToQueue();
     renderQueue();
+    runDetection();
   }
 
   /** 表单改了就同步到还没处理的条目上，这样先选文件后调参数也能生效 */
   function applyFormToQueue() {
-    var dateOverride = $("up-date").value;
+    var dateOverride = $("up-date").value;     // "YYYY-MM-DD" 或空
     var note = $("up-note").value.trim();
     var quality = $("up-quality").value;
     state.queue.forEach(function (it) {
       if (it.status === "done") { return; }
       it.quality = quality;
       if (note) { it.note = note; }
-      it.shotAt = shotAtFor(it.file, dateOverride);
+      // 单条手动改过的不再被批量表单覆盖
+      if (it.shotPinned) { return; }
+      // 只替换日期、保留识别出来的时刻，跨天补传时不用挨个改
+      it.shotAt = dateOverride
+        ? dateOverride + " " + pad(it.shot.getHours()) + ":" + pad(it.shot.getMinutes()) + ":00"
+        : shotString(it.shot);
     });
   }
 
@@ -620,7 +819,7 @@
 
   function renderQueue() {
     var el = $("up-list");
-    if (!state.queue.length) { el.innerHTML = ""; return; }
+    if (!state.queue.length) { el.innerHTML = ""; renderShotLine(); return; }
     el.innerHTML = state.queue.map(function (it) {
       var text;
       if (it.status === "comp") {
@@ -635,15 +834,58 @@
       var cls = "ustate" + (it.status === "done" ? " done" : it.status === "err" ? " err" : "");
       var bar = (it.status === "comp" || it.status === "up")
         ? '<div class="ubar"><i style="width:' + it.percent + '%"></i></div>' : "";
-      var sub = fmtDay(it.shotAt.slice(0, 10)).replace(/^今天 · |^昨天 · /, "") +
-        " " + it.shotAt.slice(11, 16) + " · " + fmtSize(it.file.size) +
-        (it.notice ? " · " + it.notice : "") +
-        (it.fallback ? " · " + it.fallback + "，改传原片" : "");
+
+      // 拍摄时间做成可以点的按钮 —— 识别错了要能就地改
+      var shot = it.shotBusy
+        ? '<span class="ushot busy">识别中…</span>'
+        : '<button class="ushot" data-shot="' + it.uid + '">' +
+          escapeHTML(fmtShotAt(it.shotAt)) + "</button>";
+      var src = it.shotBusy ? "" : '<span class="usrc">' +
+        (it.shotFrom === "meta" ? "取自视频文件" : "取自文件时间") + "</span>";
+
+      var edit = "";
+      if (it.shotEdit) {
+        edit = '<div class="uedit">' +
+          '<input type="date" class="usd" value="' + escapeHTML(it.shotEdit.day) + '">' +
+          '<input type="time" class="ust" value="' + escapeHTML(it.shotEdit.time) + '">' +
+          '<button class="btn-mini" data-shot-ok="' + it.uid + '">确定</button>' +
+          "</div>";
+      }
+
       return '<li><div class="urow"><span class="uname">' + escapeHTML(it.title) +
         '</span><span class="' + cls + '">' + escapeHTML(text) + "</span></div>" +
-        '<div class="vsub" style="font-size:11px;color:var(--muted);margin-top:2px">' +
-        escapeHTML(sub) + "</div>" + bar + "</li>";
+        '<div class="usub">' + shot + src + "<span>" + fmtSize(it.file.size) + "</span>" +
+        (it.notice ? "<span>· " + escapeHTML(it.notice) + "</span>" : "") +
+        (it.fallback ? "<span>· " + escapeHTML(it.fallback) + "，改传原片</span>" : "") +
+        "</div>" + edit + bar + "</li>";
     }).join("");
+    renderShotLine();
+  }
+
+  /** 队列上方那行「识别到的拍摄时间」汇总 */
+  function renderShotLine() {
+    var el = $("up-shot");
+    var pending = state.queue.filter(function (it) { return it.status !== "done"; });
+    if (!pending.length) { el.style.display = "none"; el.textContent = ""; return; }
+    el.style.display = "block";
+    if (pending.some(function (it) { return it.shotBusy; })) {
+      el.textContent = "正在从视频文件里读拍摄时间…";
+      return;
+    }
+    var days = {};
+    var fromMeta = 0;
+    pending.forEach(function (it) {
+      days[it.shotAt.slice(0, 10)] = true;
+      if (it.shotFrom === "meta") { fromMeta++; }
+    });
+    var ks = Object.keys(days).sort();
+    var labels = ks.map(function (k) { return fmtDay(k).replace(/^今天 · |^昨天 · /, ""); });
+    var head = fromMeta === pending.length
+      ? "拍摄时间取自视频文件："
+      : "拍摄时间（部分是文件时间，可能不准）：";
+    el.textContent = head + labels.join("、") +
+      (ks.length > 1 ? "，会分成 " + ks.length + " 天" : "") +
+      "。不对就点上面对应那行的时间改。";
   }
 
   function startQueue() {
@@ -717,18 +959,21 @@
         item.eta = Math.max(0, dur - cur);
         renderQueue();
       }).then(function (res) {
-        item.compressed = true;
-        item.blob = res.blob;
-        item.mime = res.mime;
-        item.audio = res.audio;
-        if (!item.duration && res.duration) { item.duration = res.duration; }
-        if (res.blob.size >= item.file.size) {
-          // 压完比原片还大（原片本来就很省），那就别用压缩结果
-          item.compressed = false;
-          item.blob = null;
-          item.skipped = true;
-          item.notice = "压缩后反而更大，用原片";
-        }
+        // 把拍摄时间写回压缩产物，否则存到服务器上的文件里，拍摄时间就变成「压缩那一刻」了
+        return patchCaptureTime(res.blob, parseShotAtString(item.shotAt)).then(function (blob) {
+          item.compressed = true;
+          item.blob = blob;
+          item.mime = res.mime;
+          item.audio = res.audio;
+          if (!item.duration && res.duration) { item.duration = res.duration; }
+          if (blob.size >= item.file.size) {
+            // 压完比原片还大（原片本来就很省），那就别用压缩结果
+            item.compressed = false;
+            item.blob = null;
+            item.skipped = true;
+            item.notice = "压缩后反而更大，用原片";
+          }
+        });
       });
     }).catch(function (err) {
       // 读不出来 / 压不动都退回原片：后端只负责存字节，不挑内容
@@ -923,6 +1168,75 @@
     });
     $("btn-up-start").addEventListener("click", startQueue);
 
+    // 点拍摄时间 → 就地展开日期/时间输入
+    $("up-list").addEventListener("click", function (e) {
+      var btn = e.target.closest("[data-shot]");
+      if (btn) {
+        var it = findQueueItem(btn.getAttribute("data-shot"));
+        if (!it) { return; }
+        it.shotEdit = it.shotEdit ? null : {
+          day: it.shotAt.slice(0, 10),
+          time: it.shotAt.slice(11, 16)
+        };
+        renderQueue();
+        return;
+      }
+      var ok = e.target.closest("[data-shot-ok]");
+      if (!ok) { return; }
+      var t = findQueueItem(ok.getAttribute("data-shot-ok"));
+      if (!t || !t.shotEdit) { return; }
+      var li = ok.closest("li");
+      var day = li.querySelector(".usd").value;
+      var time = li.querySelector(".ust").value || "00:00";
+      if (!day) { toast("请先选日期"); return; }
+      t.shotAt = day + " " + time + ":00";
+      t.shotPinned = true;      // 手动改过的不再被批量日期覆盖
+      t.shotEdit = null;
+      renderQueue();
+    });
+
+    // 编辑框里的输入不触发重绘，否则一边打字一边被冲掉
+    $("up-list").addEventListener("input", function (e) {
+      var inp = e.target.closest(".usd, .ust");
+      if (!inp) { return; }
+      var li = inp.closest("li");
+      var okBtn = li && li.querySelector("[data-shot-ok]");
+      if (!okBtn) { return; }
+      var t = findQueueItem(okBtn.getAttribute("data-shot-ok"));
+      if (!t || !t.shotEdit) { return; }
+      var d = li.querySelector(".usd").value;
+      var tm = li.querySelector(".ust").value;
+      if (d) { t.shotEdit.day = d; }
+      if (tm) { t.shotEdit.time = tm; }
+    });
+
+    // 已经传上来但日期归错了的，按视频文件里的时间重新认一遍
+    $("btn-resync").addEventListener("click", function () {
+      var btn = this;
+      if (btn.disabled) { return; }
+      btn.disabled = true;
+      btn.textContent = "识别中…";
+      request("api/videos/resync_shot", { method: "POST", body: "{}" })
+        .then(function (d) {
+          if (d.updated) {
+            toast("按视频文件里的时间调整了 " + d.updated + " 个");
+          } else if (d.no_meta && !d.decided) {
+            // 压缩过的文件被重新编码了，原始拍摄时间已经不在文件里
+            toast("这些视频里读不到原始拍摄时间，只能手工改日期");
+          } else {
+            toast("没有需要调整的");
+          }
+          return load();
+        })
+        .catch(function (err) {
+          if (err.message !== "unauthorized") { toast("识别失败，请重试"); }
+        })
+        .then(function () {
+          btn.disabled = false;
+          btn.textContent = "重认拍摄时间";
+        });
+    });
+
     ["up-date", "up-note", "up-quality"].forEach(function (id) {
       $(id).addEventListener("change", function () {
         applyFormToQueue();
@@ -937,6 +1251,13 @@
     $("timeline").addEventListener("click", function (e) {
       var edit = e.target.closest("[data-edit]");
       if (edit) { state.editing = Number(edit.getAttribute("data-edit")); render(); return; }
+      // 复制直链：拿到完整地址就能在别的设备上下载这个文件来核对
+      var link = e.target.closest("[data-link]");
+      if (link) {
+        var lv = findVideo(Number(link.getAttribute("data-link")));
+        if (lv) { copyText(new URL(lv.url, location.href).href); }
+        return;
+      }
       var del = e.target.closest("[data-del]");
       if (del) {
         var id = Number(del.getAttribute("data-del"));

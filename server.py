@@ -27,7 +27,7 @@ import shutil
 import sqlite3
 import sys
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -412,6 +412,79 @@ def _rm(path):
 
 SHOT_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$")
 
+# 1904-01-01 → 1970-01-01 的秒数。MP4 的时间戳以 1904 为基准
+MP4_EPOCH = 2082844800
+
+
+def read_mp4_creation(path):
+    """从 MP4 / MOV 的 moov/mvhd 里读出拍摄时间，读不到返回 None。
+
+    为什么要读文件内部：file.lastModified 是**文件系统**的修改时间，视频一旦被复制、
+    下载、或经微信/网盘转存，这个时间就变成「转存那一刻」—— 于是所有视频都被归到今天。
+    而拍摄时间写在容器里，跟着文件内容走，转存不会丢。
+
+    实现上不解析完整的 box 树：moov 可能在文件开头（faststart）也可能在结尾，
+    老实按 box 走反而更脆。直接扫 'mvhd' 标记，再对取到的时间戳做合理性校验就够了。
+    只读头 2MB + 尾 16MB，不会把几百 MB 的视频整个读进来。
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return None
+    if size <= 0:
+        return None
+
+    windows = []
+    try:
+        with open(path, "rb") as f:
+            head = f.read(min(size, 2 * 1024 * 1024))
+            windows.append(head)
+            if size > len(head):
+                tail_len = min(size, 16 * 1024 * 1024)
+                f.seek(size - tail_len)
+                windows.append(f.read(tail_len))
+    except OSError:
+        return None
+
+    for buf in windows:
+        pos = buf.find(b"mvhd")
+        while pos >= 0:
+            dt = None
+            off = pos + 8          # 跳过 "mvhd" 之后的 version(1) + flags(3)
+            if pos + 5 <= len(buf):
+                ver = buf[pos + 4]
+                if ver == 1 and off + 8 <= len(buf):
+                    dt = _mp4_secs_to_dt(int.from_bytes(buf[off:off + 8], "big"))
+                elif ver == 0 and off + 4 <= len(buf):
+                    dt = _mp4_secs_to_dt(int.from_bytes(buf[off:off + 4], "big"))
+            if dt:
+                return dt
+            pos = buf.find(b"mvhd", pos + 1)
+    return None
+
+
+def _mp4_secs_to_dt(secs):
+    """把 mvhd 的 1904 基准秒数转成本地时间。
+
+    mvhd 规范上写 UTC，但不少安卓机直接把本地时间当 UTC 写进去。
+    如果按 UTC 解释出来居然是未来（录像不可能在未来），那一定是后者，
+    就把它当成本地墙上时间。这样两种设备都能落到正确的日期。
+    """
+    if not secs:
+        return None
+    try:
+        aware = datetime.fromtimestamp(secs - MP4_EPOCH, timezone.utc)
+    except (ValueError, OSError, OverflowError):
+        return None
+    if aware.year < 1990 or aware.year > 2100:
+        return None
+    local_of_utc = aware.astimezone().replace(tzinfo=None)
+    utc_wall = aware.replace(tzinfo=None)
+    dt = utc_wall if local_of_utc > datetime.now() else local_of_utc
+    if dt > datetime.now() or dt.year < 1990:
+        return None
+    return dt
+
 
 def parse_shot_at(value, default=None):
     """把 'YYYY-MM-DD' / 'YYYY-MM-DD HH:MM' / 'YYYY-MM-DD HH:MM:SS' 统一成完整时间串。
@@ -497,6 +570,74 @@ def videos_stats():
         }
     finally:
         conn.close()
+
+
+def resync_shot_times():
+    """按视频文件里的 mvhd 修正拍摄时间。
+
+    只在**确实能提供新信息**时才动记录，两条判断缺一不可：
+
+    1. 该记录的 shot_at 日期 == created_at 日期 —— 也就是它看起来「落在了上传当天」，
+       这正是要修的症状。日期已经被定成别的值（识别对了、或人工改过）就不碰，
+       否则会把人家手工改好的日期冲掉。
+    2. 文件里 mvhd 的日期 != created_at 日期 —— 说明文件确实带着独立的拍摄时间。
+
+    第 2 条是关键。**浏览器压缩后的产物，mvhd 会被写成「压缩那一刻」**（实测确认：
+    MediaRecorder 输出的 MP4，creation_time 就是编码时的墙上时间；WebM 干脆没有 mvhd）。
+    这种文件的 mvhd 跟上传时间同一时刻，提供不了任何原始信息 —— 不加这条判断，
+    「重认」就会把已经正确的日期又冲回上传当天，还不如不做。
+
+    返回一个 dict：scanned 扫描数、changes 变更清单、
+    decided 跳过数（日期已定）、no_meta 跳过数（文件里没有可用时间）。
+    """
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT id, title, shot_at, created_at, filename FROM video WHERE size > 0"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    scanned = 0
+    decided = 0          # 日期已经定下来了，不该再动
+    no_meta = 0          # 文件里读不出可用时间，或读出来就是上传时刻
+    changes = []
+
+    conn = get_conn()
+    try:
+        for r in rows:
+            shot_day = (r["shot_at"] or "")[:10]
+            made_day = (r["created_at"] or "")[:10]
+            if shot_day and made_day and shot_day != made_day:
+                decided += 1
+                continue
+
+            path = _safe_media_path(MEDIA_ORIGIN, r["filename"])
+            if not path or not os.path.isfile(path):
+                no_meta += 1
+                continue
+            scanned += 1
+
+            dt = read_mp4_creation(path)
+            if not dt:
+                no_meta += 1
+                continue
+            new = dt.strftime("%Y-%m-%d %H:%M:%S")
+            if new[:10] == made_day or new == r["shot_at"]:
+                # 文件里的日期就是上传那天，说明它是被重新编码过的产物，没有原始信息
+                no_meta += 1
+                continue
+
+            conn.execute("UPDATE video SET shot_at = ? WHERE id = ?", (new, r["id"]))
+            changes.append({
+                "id": r["id"], "title": r["title"],
+                "from": r["shot_at"], "to": new,
+            })
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"scanned": scanned, "decided": decided, "no_meta": no_meta, "changes": changes}
 
 
 def get_video(pid):
@@ -948,6 +1089,17 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": "bad_token", "message": "口令不正确"}, 403)
             delete_payment(pid)
             return self._json({"ok": True, "id": pid})
+
+        if path == "/api/videos/resync_shot":
+            res = resync_shot_times()
+            return self._json({
+                "ok": True,
+                "scanned": res["scanned"],
+                "updated": len(res["changes"]),
+                "decided": res["decided"],
+                "no_meta": res["no_meta"],
+                "changes": res["changes"][:60],
+            })
 
         if path == "/api/videos/update":
             try:
