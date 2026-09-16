@@ -18,6 +18,7 @@
     stats: { count: 0, size: 0, duration: 0, saved: 0, watched: 0 },
     manage: false,
     editing: null,
+    linkFor: null,
     maxUploadMb: 2048,
     unlockRequired: true,
     unlockHint: "",
@@ -234,6 +235,11 @@
         '<button class="btn-mini" data-link="' + v.id + '">直链</button>' +
         '<button class="btn-mini danger" data-del="' + v.id + '">删除</button></div>'
       : "";
+    // 点「直链」就在卡片里摊开地址：只塞进剪贴板的话，手机上根本看不见拿到了什么
+    var linkRow = (state.manage && state.linkFor === v.id)
+      ? '<div class="vlink"><input type="text" readonly value="' + escapeHTML(absUrl(v)) + '">' +
+        '<button class="btn-mini" data-copy="' + v.id + '">复制</button></div>'
+      : "";
 
     return '<div class="vcard" data-play="' + v.id + '">' +
       '<div class="vcover">' + cover +
@@ -243,7 +249,12 @@
       "</div>" + prog +
       '<div class="vbody"><div class="vtitle">' + escapeHTML(cardLabel(v)) + "</div>" +
         '<div class="vsub">' + sub + "</div>" +
-      "</div>" + adm + "</div>";
+      "</div>" + adm + linkRow + "</div>";
+  }
+
+  /** 视频地址是相对路径，拼成完整地址才好在别处直接用 */
+  function absUrl(v) {
+    try { return new URL(v.url, location.href).href; } catch (e) { return v.url; }
   }
 
   function editHTML(v) {
@@ -1149,6 +1160,7 @@
     $("btn-manage").addEventListener("click", function () {
       state.manage = !state.manage;
       state.editing = null;
+      state.linkFor = null;
       render();
     });
 
@@ -1251,11 +1263,22 @@
     $("timeline").addEventListener("click", function (e) {
       var edit = e.target.closest("[data-edit]");
       if (edit) { state.editing = Number(edit.getAttribute("data-edit")); render(); return; }
-      // 复制直链：拿到完整地址就能在别的设备上下载这个文件来核对
+      // 点「直链」把完整地址摊在卡片上。只扔进剪贴板的话，手机上根本看不见拿到了什么
       var link = e.target.closest("[data-link]");
       if (link) {
-        var lv = findVideo(Number(link.getAttribute("data-link")));
-        if (lv) { copyText(new URL(lv.url, location.href).href); }
+        var lid = Number(link.getAttribute("data-link"));
+        state.linkFor = state.linkFor === lid ? null : lid;
+        render();
+        if (state.linkFor === lid) {
+          var inp = document.querySelector(".vlink input");
+          if (inp) { inp.focus(); inp.select(); }
+        }
+        return;
+      }
+      var cp = e.target.closest("[data-copy]");
+      if (cp) {
+        var cv = findVideo(Number(cp.getAttribute("data-copy")));
+        if (cv) { copyText(absUrl(cv)); }
         return;
       }
       var del = e.target.closest("[data-del]");
@@ -1276,7 +1299,7 @@
       }
       // 「点卡片进播放」这一步必须放在上面所有按钮判断之后 ——
       // .vedit 里的保存/换封面/取消都在这个容器里，先判 .vedit 会把它们一并吞掉
-      if (e.target.closest(".vedit") || state.editing) { return; }
+      if (e.target.closest(".vedit") || e.target.closest(".vlink") || state.editing) { return; }
       var playable = e.target.closest("[data-play]");
       if (playable) { play(Number(playable.getAttribute("data-play"))); }
     });

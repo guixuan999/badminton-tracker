@@ -207,6 +207,15 @@ select {
 .vcard .vsub .cut { color: var(--accent-strong); }
 
 .vcard .vadm { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 9px 9px; }
+/* 展开出来的直链：只读输入框 + 复制，卡片内摊开，不用弹窗 */
+.vcard .vlink { display: flex; gap: 6px; padding: 0 9px 9px; }
+.vcard .vlink input {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  padding: 4px 6px;
+  color: var(--muted);
+}
 /* 编辑时铺满整行，148px 的格子里塞不下几个输入框 */
 .vcard.editing { grid-column: 1 / -1; cursor: default; }
 .vcard.editing:active { background: var(--card); }
