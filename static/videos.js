@@ -860,42 +860,288 @@
     });
   }
 
+  // ---------- 拍摄：直接调摄像头录，边录边按目标画质编码 ----------
+
+  var cam = {
+    stream: null,
+    rec: null,
+    chunks: [],
+    startedAt: 0,
+    timer: null,
+    facing: "environment",
+    running: false
+  };
+
+  function camSupported() {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+  }
+
+  function camQuality() {
+    return QUALITY[$("cam-quality").value] || QUALITY.mid;
+  }
+
+  function camMsg(text, bad) {
+    var el = $("cam-hint");
+    el.textContent = text || "";
+    el.className = "cam-hint" + (bad ? " bad" : "");
+    el.style.display = text ? "block" : "none";
+  }
+
+  function camFoot(text) {
+    $("cam-foot").textContent = text || "";
+  }
+
+  function stopStream() {
+    if (!cam.stream) { return; }
+    cam.stream.getTracks().forEach(function (t) {
+      try { t.stop(); } catch (e) { /* ignore */ }
+    });
+    cam.stream = null;
+  }
+
+  function camErrorText(err) {
+    var n = (err && err.name) || "";
+    if (n === "NotAllowedError" || n === "SecurityError") {
+      return "摄像头／麦克风权限被拒了。到浏览器设置里允许本站使用，然后再点一次「拍摄」。";
+    }
+    if (n === "NotFoundError" || n === "OverconstrainedError") {
+      return "没找到可用的摄像头。";
+    }
+    if (n === "NotReadableError" || n === "AbortError") {
+      return "摄像头被别的程序占着（比如正在视频通话），关掉它再试。";
+    }
+    return "打不开摄像头：" + ((err && err.message) || "未知错误");
+  }
+
+  function camConstraints() {
+    var q = camQuality();
+    return {
+      video: {
+        facingMode: cam.facing,
+        width: { ideal: q.edge },
+        height: { ideal: Math.round(q.edge * 9 / 16) },
+        frameRate: { ideal: 30 }
+      },
+      audio: true
+    };
+  }
+
+  function camUI() {
+    var btn = $("cam-shoot");
+    btn.textContent = cam.running ? "停止录制" : "开始录制";
+    btn.className = "cam-btn" + (cam.running ? " rec" : "");
+    btn.disabled = !cam.stream && !cam.running;
+    $("cam-quality").disabled = cam.running;
+    $("cam-flip").disabled = cam.running;
+    $("cam-timer").style.display = cam.running ? "" : "none";
+    if (!cam.running) { $("cam-timer").textContent = "00:00"; }
+  }
+
+  function startPreview() {
+    stopStream();
+    camMsg("正在打开摄像头…");
+    camFoot("");
+    camUI();
+
+    navigator.mediaDevices.getUserMedia(camConstraints()).then(function (stream) {
+      cam.stream = stream;
+      var v = $("cam-preview");
+      v.srcObject = stream;
+      var p = v.play();
+      if (p && p.catch) { p.catch(function () { /* 自动播放被拦，用户点一下也能放 */ }); }
+      camMsg("");
+      camUI();
+      // 只有一个摄像头就不摆「切换镜头」这个按钮
+      navigator.mediaDevices.enumerateDevices().then(function (list) {
+        var n = list.filter(function (d) { return d.kind === "videoinput"; }).length;
+        $("cam-flip").style.display = n > 1 ? "" : "none";
+      }).catch(function () { /* ignore */ });
+    }).catch(function (err) {
+      camMsg(camErrorText(err), true);
+      camUI();
+    });
+  }
+
+  function openCamera() {
+    if (!camSupported()) {
+      toast("这台浏览器不能直接拍摄（或者不是 HTTPS），用「上传」选已拍好的视频吧");
+      return;
+    }
+    cam.running = false;
+    cam.startedAt = 0;
+    $("cam-mask").style.display = "flex";
+    camUI();
+    startPreview();
+  }
+
+  function closeCamera() {
+    if (cam.rec && cam.rec.state !== "inactive") {
+      try { cam.rec.onstop = null; cam.rec.stop(); } catch (e) { /* ignore */ }
+    }
+    cam.rec = null;
+    cam.chunks = [];
+    clearInterval(cam.timer);
+    cam.timer = null;
+    cam.running = false;
+    stopStream();               // 必须停，否则摄像头指示灯会一直亮着
+    $("cam-preview").srcObject = null;
+    $("cam-mask").style.display = "none";
+    camUI();
+  }
+
+  function camStart() {
+    if (!cam.stream) { return; }
+    var mime = pickMime();
+    if (!mime) {
+      camMsg("这台浏览器不支持录像，请用「上传」选已拍好的视频", true);
+      return;
+    }
+    var q = camQuality();
+    cam.chunks = [];
+    try {
+      cam.rec = new MediaRecorder(cam.stream, {
+        mimeType: mime,
+        videoBitsPerSecond: q.vbps,     // 录的时候就用目标码率，录完不必再压
+        audioBitsPerSecond: q.abps
+      });
+    } catch (e) {
+      camMsg("这套录制参数不被支持：" + e.message, true);
+      return;
+    }
+    cam.rec.ondataavailable = function (e) {
+      if (e.data && e.data.size) { cam.chunks.push(e.data); }
+    };
+    cam.rec.onerror = function (e) {
+      camMsg("录制出错：" + ((e.error && e.error.message) || "未知"), true);
+    };
+    cam.rec.start(1000);        // 每秒切一片，中途出岔子也留得住前面录的
+    cam.startedAt = Date.now();
+    cam.running = true;
+    camMsg("");
+    camUI();
+    camTick();
+  }
+
+  function camStop() {
+    if (!cam.rec || cam.rec.state === "inactive") { return; }
+    var mime = cam.rec.mimeType || pickMime();
+    var started = cam.startedAt;
+    cam.rec.onstop = function () {
+      var blob = new Blob(cam.chunks, { type: mime });
+      cam.chunks = [];
+      finishRecording(blob, mime, started);
+    };
+    cam.running = false;
+    clearInterval(cam.timer);
+    camUI();
+    cam.rec.stop();
+  }
+
+  /** 录制中每半秒刷一次计时和预估体积 */
+  function camTick() {
+    clearInterval(cam.timer);
+    cam.timer = setInterval(function () {
+      var s = Math.max(0, Math.round((Date.now() - cam.startedAt) / 1000));
+      $("cam-timer").textContent = pad(Math.floor(s / 60)) + ":" + pad(s % 60);
+      var q = camQuality();
+      camFoot("已录 " + s + " 秒，约 " + fmtSize((q.vbps + q.abps) / 8 * s) +
+        "。录制期间别锁屏、别切到别的 App，切走录制就断了。");
+    }, 500);
+  }
+
+  function finishRecording(blob, mime, startedAt) {
+    if (!blob || !blob.size) {
+      camMsg("没录到内容，再试一次", true);
+      camFoot("");
+      return;
+    }
+    var d = new Date(startedAt || Date.now());
+    var ext = /mp4/i.test(mime) ? ".mp4" : ".webm";
+    var name = "拍摄-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" +
+      pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + ext;
+    var file;
+    try {
+      file = new File([blob], name, { type: mime.split(";")[0], lastModified: d.getTime() });
+    } catch (e) {
+      blob.name = name;         // 老浏览器没有 File 构造器，凑合
+      file = blob;
+    }
+
+    closeCamera();
+    enqueue([makeQueueItem(file, {
+      preEncoded: true,         // 已经按目标码率编好，跳过二次压缩
+      shot: d,                  // 录制这一刻就是拍摄时间
+      // shotPinned 会让 applyFormToQueue 跳过它，所以 shotAt 得在这里给全，
+      // 否则队列里会显示「未设置」
+      shotAt: shotString(d),
+      shotFrom: "camera",
+      shotPinned: true,         // 别被上传面板里的批量日期改掉
+      shotBusy: false,
+      quality: $("cam-quality").value
+    })]);
+
+    // 顺手把上传面板摊开，用户能立刻看到刚录的那条
+    var form = $("up-form");
+    if (!form.style.display || form.style.display === "none") {
+      form.style.display = "block";
+    }
+    toast("已录好，收在上传队列里了");
+  }
+
   var uidSeq = 0;
 
-  function pickFiles(files) {
-    if (!files || !files.length) { return; }
-    Array.prototype.forEach.call(files, function (f) {
-      var item = {
-        uid: ++uidSeq,
-        file: f,
-        title: f.name.replace(/\.[^.]+$/, ""),
-        note: "",
-        quality: $("up-quality").value,
-        // 先用文件修改时间垫着，识别出真实拍摄时间后覆盖
-        shot: fileTime(f),
-        shotFrom: "file",
-        shotPinned: false,
-        shotBusy: true,
-        shotEdit: null,
-        duration: 0,
-        cover: null,
-        blob: null,
-        compressed: false,
-        skipped: false,
-        notice: "",
-        fallback: "",
-        audio: true,
-        status: "wait",
-        percent: 0,
-        eta: 0,
-        error: ""
-      };
+  /** 造一个队列条目。extra 用来覆盖默认值（拍摄直录的产物会用到） */
+  function makeQueueItem(f, extra) {
+    var item = {
+      uid: ++uidSeq,
+      file: f,
+      title: f.name.replace(/\.[^.]+$/, ""),
+      note: "",
+      quality: $("up-quality").value,
+      // 先用文件修改时间垫着，识别出真实拍摄时间后覆盖
+      shot: fileTime(f),
+      shotFrom: "file",
+      shotPinned: false,
+      shotBusy: true,
+      shotEdit: null,
+      duration: 0,
+      cover: null,
+      blob: null,
+      compressed: false,
+      skipped: false,
+      notice: "",
+      fallback: "",
+      // 摄像头直录的产物已经是按目标码率编好的，不用再压一遍
+      preEncoded: false,
+      audio: true,
+      status: "wait",
+      percent: 0,
+      eta: 0,
+      error: ""
+    };
+    if (extra) {
+      Object.keys(extra).forEach(function (k) { item[k] = extra[k]; });
+    }
+    return item;
+  }
+
+  function enqueue(items) {
+    if (!items || !items.length) { return; }
+    items.forEach(function (item) {
       state.queue.push(item);
-      detectQueue.push(item);
+      // 拍摄产物的时间就是录制时刻，不用再去读文件头认
+      if (!item.preEncoded) { detectQueue.push(item); }
     });
     applyFormToQueue();
     renderQueue();
     runDetection();
+  }
+
+  function pickFiles(files) {
+    if (!files || !files.length) { return; }
+    var items = [];
+    Array.prototype.forEach.call(files, function (f) { items.push(makeQueueItem(f)); });
+    enqueue(items);
   }
 
   /** 表单改了就同步到还没处理的条目上，这样先选文件后调参数也能生效 */
@@ -951,7 +1197,8 @@
         : '<button class="ushot" data-shot="' + it.uid + '">' +
           escapeHTML(fmtShotAt(it.shotAt)) + "</button>";
       var src = it.shotBusy ? "" : '<span class="usrc">' +
-        (it.shotFrom === "meta" ? "取自视频文件" : "取自文件时间") + "</span>";
+        (it.shotFrom === "camera" ? "刚刚拍的"
+          : it.shotFrom === "meta" ? "取自视频文件" : "取自文件时间") + "</span>";
 
       var edit = "";
       if (it.shotEdit) {
@@ -1044,6 +1291,14 @@
     return probeVideo(item.file).then(function (meta) {
       item.duration = meta.duration;
       item.cover = meta.cover;
+
+      // 摄像头直录的产物：录的时候就是按目标码率编的，再压一遍纯属白等
+      // —— 而压缩是 1:1 实时的，一秒都省不掉。
+      if (item.preEncoded) {
+        item.skipped = true;
+        item.notice = "直接录的，不用再压";
+        return;
+      }
 
       if (!pickMime()) {
         item.skipped = true;
@@ -1261,6 +1516,30 @@
       state.editing = null;
       state.linkFor = null;
       render();
+    });
+
+    // 拍摄
+    $("btn-shoot").addEventListener("click", openCamera);
+    $("cam-close").addEventListener("click", function () {
+      // 正在录的时候点关闭，先把这段收好再退，别让人白录
+      if (cam.running) { camStop(); return; }
+      closeCamera();
+    });
+    $("cam-shoot").addEventListener("click", function () {
+      if (cam.running) { camStop(); } else { camStart(); }
+    });
+    $("cam-quality").addEventListener("change", function () {
+      if (!cam.running) { startPreview(); }   // 换档就重新取流，约束才生效
+    });
+    $("cam-flip").addEventListener("click", function () {
+      if (cam.running) { return; }
+      cam.facing = cam.facing === "environment" ? "user" : "environment";
+      startPreview();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && $("cam-mask").style.display === "flex") {
+        if (cam.running) { camStop(); } else { closeCamera(); }
+      }
     });
 
     $("btn-upload").addEventListener("click", function () {

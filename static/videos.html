@@ -37,6 +37,7 @@
       <span id="vstats"></span>
       <span class="vacts">
         <button class="btn-mini" id="btn-resync" style="display:none">重认拍摄时间</button>
+        <button class="btn-mini" id="btn-shoot">拍摄</button>
         <button class="btn-mini" id="btn-upload">上传</button>
         <button class="btn-mini" id="btn-manage">管理</button>
       </span>
@@ -94,6 +95,35 @@
     </div>
     <video id="player" controls playsinline preload="metadata"></video>
     <div class="player-foot" id="player-foot"></div>
+  </div>
+</div>
+
+<div class="cam-mask" id="cam-mask" style="display:none">
+  <div class="cam">
+    <div class="cam-head">
+      <span class="cam-title">拍摄训练视频</span>
+      <button class="cam-x" id="cam-close">关闭</button>
+    </div>
+
+    <div class="cam-view">
+      <video id="cam-preview" autoplay muted playsinline></video>
+      <span class="cam-timer" id="cam-timer" style="display:none">00:00</span>
+      <div class="cam-hint" id="cam-hint" style="display:none"></div>
+    </div>
+
+    <div class="cam-row">
+      <select id="cam-quality">
+        <option value="low">省流 480p</option>
+        <option value="mid" selected>标准 540p</option>
+        <option value="high">清晰 720p</option>
+      </select>
+      <button class="btn-mini" id="cam-flip" style="display:none">切换镜头</button>
+    </div>
+
+    <div class="cam-bar">
+      <button class="cam-btn" id="cam-shoot">开始录制</button>
+    </div>
+    <div class="cam-foot" id="cam-foot"></div>
   </div>
 </div>
 
