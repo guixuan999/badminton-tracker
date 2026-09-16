@@ -9,7 +9,32 @@
   font-size: 12px;
   color: var(--muted);
 }
-.vacts { display: inline-flex; gap: 6px; flex: none; }
+.vacts { display: inline-flex; gap: 6px; flex: none; align-items: stretch; }
+
+/* 图标按钮：跟同排的文字按钮一样高（靠 stretch 撑，不写死像素），省掉文字。
+   底色用主题色的浅色版，跟导航选中态同一套语言 —— 一眼能认出是「能点的东西」。
+   文案放在 title / aria-label —— 桌面悬停看得到，读屏也读得出来 */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  padding: 0;
+  background: var(--accent-bg);
+  border-color: var(--accent-bg);
+  color: var(--accent-strong);
+}
+.btn-icon svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.btn-icon:active { background: #cdeadd; }   /* accent-bg 再深一档 */
 
 /* ---------- 上传 ---------- */
 
@@ -342,6 +367,19 @@ select {
 
 .cam-row { display: flex; gap: 8px; margin-top: 10px; }
 .cam-row select { flex: 1; }
+
+/* 变焦：只有设备真的支持才显示（iPhone 的 WebKit 不暴露这个能力，会自动隐藏） */
+.cam-zoomrow { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.cam-zoomlab { flex: none; color: rgba(255, 255, 255, .7); font-size: 12px; }
+.cam-zoomrow input[type="range"] { flex: 1; min-width: 0; accent-color: #fff; }
+.cam-zoomval {
+  flex: none;
+  width: 42px;
+  text-align: right;
+  color: #fff;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
 .cam select {
   background: rgba(255, 255, 255, .12);
   border-color: rgba(255, 255, 255, .28);

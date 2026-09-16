@@ -869,7 +869,8 @@
     startedAt: 0,
     timer: null,
     facing: "environment",
-    running: false
+    running: false,
+    zoomWant: null      // 用户调过的倍数，换画质重新取流时带过去
   };
 
   function camSupported() {
@@ -926,6 +927,52 @@
     };
   }
 
+  function camTrack() {
+    if (!cam.stream) { return null; }
+    var t = cam.stream.getVideoTracks();
+    return t.length ? t[0] : null;
+  }
+
+  function fmtZoom(v) {
+    return (Math.round(v * 10) / 10).toFixed(1) + "x";
+  }
+
+  /**
+   * 变焦。能不能用完全看设备，一律运行时探测：
+   *   - 安卓 Chrome、桌面接支持 PTZ 的摄像头 → getCapabilities().zoom 有值
+   *   - iPhone / iPad → WebKit 根本不暴露这个能力，连键都没有
+   * 没有就把整行藏起来，不摆一个点了没反应的控件。
+   */
+  function setupZoom(track) {
+    var row = $("cam-zoom-row");
+    var caps = {};
+    try { caps = (track.getCapabilities && track.getCapabilities()) || {}; } catch (e) { caps = {}; }
+    if (!caps.zoom || caps.zoom.max <= caps.zoom.min) {
+      row.style.display = "none";
+      cam.zoomWant = null;
+      return;
+    }
+    var range = $("cam-zoom");
+    range.min = caps.zoom.min;
+    range.max = caps.zoom.max;
+    range.step = caps.zoom.step || 0.1;
+    var cur = Math.min(caps.zoom.max,
+      Math.max(caps.zoom.min, cam.zoomWant === null ? caps.zoom.min : cam.zoomWant));
+    range.value = cur;
+    $("cam-zoom-val").textContent = fmtZoom(cur);
+    row.style.display = "";
+    if (cam.zoomWant !== null) { applyZoom(cur); }
+  }
+
+  function applyZoom(v) {
+    var t = camTrack();
+    if (!t) { return; }
+    try {
+      var p = t.applyConstraints({ advanced: [{ zoom: v }] });
+      if (p && p.catch) { p.catch(function () { /* 个别设备会拒，忽略就好 */ }); }
+    } catch (e) { /* 忽略 */ }
+  }
+
   function camUI() {
     var btn = $("cam-shoot");
     btn.textContent = cam.running ? "停止录制" : "开始录制";
@@ -950,6 +997,8 @@
       var p = v.play();
       if (p && p.catch) { p.catch(function () { /* 自动播放被拦，用户点一下也能放 */ }); }
       camMsg("");
+      var track = camTrack();
+      if (track) { setupZoom(track); }
       camUI();
       // 只有一个摄像头就不摆「切换镜头」这个按钮
       navigator.mediaDevices.enumerateDevices().then(function (list) {
@@ -1535,6 +1584,14 @@
       if (cam.running) { return; }
       cam.facing = cam.facing === "environment" ? "user" : "environment";
       startPreview();
+    });
+    // 变焦不用重新取流，所以录制中也允许调（像摄像机推拉一样）
+    $("cam-zoom").addEventListener("input", function () {
+      var v = parseFloat(this.value);
+      if (isNaN(v)) { return; }
+      cam.zoomWant = v;
+      $("cam-zoom-val").textContent = fmtZoom(v);
+      applyZoom(v);
     });
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape" && $("cam-mask").style.display === "flex") {

@@ -37,8 +37,19 @@
       <span id="vstats"></span>
       <span class="vacts">
         <button class="btn-mini" id="btn-resync" style="display:none">重认拍摄时间</button>
-        <button class="btn-mini" id="btn-shoot">拍摄</button>
-        <button class="btn-mini" id="btn-upload">上传</button>
+        <button class="btn-icon" id="btn-shoot" title="拍摄" aria-label="拍摄">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+        </button>
+        <button class="btn-icon" id="btn-upload" title="上传" aria-label="上传">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </button>
         <button class="btn-mini" id="btn-manage">管理</button>
       </span>
     </div>
@@ -117,7 +128,13 @@
         <option value="mid" selected>标准 540p</option>
         <option value="high">清晰 720p</option>
       </select>
-      <button class="btn-mini" id="cam-flip" style="display:none">切换镜头</button>
+      <button class="btn-mini cam-flip" id="cam-flip" style="display:none">切换镜头</button>
+    </div>
+
+    <div class="cam-zoomrow" id="cam-zoom-row" style="display:none">
+      <span class="cam-zoomlab">变焦</span>
+      <input type="range" id="cam-zoom" min="1" max="1" step="0.1" value="1">
+      <span class="cam-zoomval" id="cam-zoom-val">1.0x</span>
     </div>
 
     <div class="cam-bar">
