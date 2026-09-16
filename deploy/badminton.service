@@ -15,6 +15,10 @@ Environment=UNLOCK_CODE=改成你的解锁口令
 # 是否在解锁弹框里直接显示口令（1=显示，自用方便；0=隐藏，多人可见时用）
 Environment=SHOW_UNLOCK_CODE=1
 Environment=DB_PATH=/opt/badminton-tracker/data/training.db
+# 视频与封面存放目录（nginx 的 /media/ alias 也指向这里，两处要保持一致）
+Environment=MEDIA_DIR=/opt/badminton-tracker/media
+# 单个视频文件大小上限（MB），需与 nginx 的 client_max_body_size 匹配
+Environment=MAX_UPLOAD_MB=2048
 ExecStart=/usr/bin/python3 /opt/badminton-tracker/server.py
 Restart=always
 RestartSec=3

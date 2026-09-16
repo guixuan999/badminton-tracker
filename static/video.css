@@ -1,0 +1,149 @@
+/* 训练视频库 —— 依赖 style.css 里的设计变量与基础组件 */
+
+/* 分组筛选：横向可滚动，不换行，避免分组多了把卡片挤下去 */
+.vchips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; margin-bottom: 10px; }
+.vchips::-webkit-scrollbar { display: none; }
+.vchips .chip { flex: none; }
+
+.vmeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.vacts { display: inline-flex; gap: 6px; flex: none; }
+
+/* ---------- 上传 ---------- */
+
+.upform { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.updrop { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.updrop .note { margin: 0; }
+.upfields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.upform code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  background: #f2f4f6;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 4px;
+  color: var(--accent-strong);
+}
+
+.uplist { list-style: none; margin: 8px 0 0; padding: 0; }
+.uplist li { padding: 7px 0; border-bottom: 1px solid #f0f1f3; font-size: 12px; }
+.uplist li:last-child { border-bottom: none; }
+.uplist .urow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.uplist .uname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uplist .ustate { flex: none; color: var(--muted); }
+.uplist .ustate.done { color: var(--accent-strong); }
+.uplist .ustate.err { color: var(--danger); }
+.uplist .ubar { height: 3px; border-radius: 2px; background: #eef0f2; margin-top: 5px; overflow: hidden; }
+.uplist .ubar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+
+/* ---------- 卡片网格 ---------- */
+
+.vgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.vcard {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+}
+.vcard:active { background: #fafbfc; }
+
+.vcard .vcover { position: relative; aspect-ratio: 16 / 9; background: #eef0f2; overflow: hidden; }
+.vcard .vcover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.vcard .vcover .ph {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.vcard .vcover .ph::after {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 11px solid #c6cbd1;
+  border-top: 7px solid transparent;
+  border-bottom: 7px solid transparent;
+  margin-left: 3px;
+}
+
+.vcard .vseq,
+.vcard .vdur,
+.vcard .vdone {
+  position: absolute;
+  background: rgba(31, 35, 40, .62);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+}
+.vcard .vseq { top: 6px; left: 6px; }
+.vcard .vdone { top: 6px; right: 6px; background: rgba(29, 158, 117, .9); }
+.vcard .vdur { right: 6px; bottom: 6px; }
+
+.vcard .vprog { height: 2px; background: #eef0f2; }
+.vcard .vprog i { display: block; height: 100%; background: var(--accent); }
+
+.vcard .vbody { padding: 8px 9px 9px; flex: 1; }
+.vcard .vtitle {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 35px;
+}
+.vcard .vsub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+.vcard .vadm { display: flex; gap: 6px; padding: 0 9px 9px; }
+/* 编辑时铺满整行，148px 的格子里塞不下三个输入框 */
+.vcard.editing { grid-column: 1 / -1; cursor: default; }
+.vcard.editing:active { background: var(--card); }
+.vedit { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 9px; }
+.vedit label.field { margin: 0; }
+.vedit .vfull { grid-column: 1 / -1; }
+.vedit .row { gap: 6px; }
+
+/* ---------- 播放浮层 ---------- */
+
+.player-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(16, 18, 20, .93);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+}
+.player { width: 100%; max-width: 880px; }
+.player video {
+  width: 100%;
+  max-height: 76vh;
+  background: #000;
+  border-radius: 10px;
+  display: block;
+}
+.player-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.player-title { color: #fff; font-size: 14px; font-weight: 500; }
+.player-close { background: transparent; border-color: rgba(255, 255, 255, .35); color: #fff; }
+.player-close:active { background: rgba(255, 255, 255, .12); }
+.player-foot { color: rgba(255, 255, 255, .6); font-size: 12px; margin-top: 8px; }

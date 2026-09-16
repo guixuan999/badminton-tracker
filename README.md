@@ -1,16 +1,23 @@
 # 羽毛球培训记录
 
-记录孩子每天是否参加羽毛球培训，以及缴费与剩余课时。自用工具，手机浏览器访问。
+记录孩子每天是否参加羽毛球培训、缴费与剩余课时，外加一个自用的训练视频库。自用工具，手机浏览器访问。
 
 ## 目录结构
 
 ```
 server.py           后端（Python 3 标准库 + SQLite，零第三方依赖）
-static/index.html   页面结构
-static/app.js       前端逻辑
-static/style.css    样式
+static/index.html   训练记录页结构
+static/app.js       训练记录页逻辑
+static/videos.html  视频库页结构
+static/videos.js    视频库页逻辑（含上传）
+static/video.css    视频库页样式
+static/style.css    两页共用的基础样式与设计变量
 data/training.db    数据库（首次启动自动创建，已 gitignore）
+media/origin/       上传的视频原文件（已 gitignore）
+media/cover/        封面图，上传时由浏览器从视频里截一帧（已 gitignore）
 ```
+
+两个页面都在同一个后端下，顶部有「训练记录 / 视频库」互相切换。
 
 ## 本地运行
 
@@ -27,8 +34,10 @@ python3 server.py
 | `HOST` | 0.0.0.0 | 监听地址 |
 | `DB_PATH` | ./data/training.db | 数据库路径 |
 | `ACCESS_CODE` | 空 | 访问口令；**部署到公网时务必设置** |
-| `UNLOCK_CODE` | 空 | 解锁已锁定记录的口令；留空则回退用 `ACCESS_CODE` |
-| `SHOW_UNLOCK_CODE` | 1 | 是否在解锁弹框里直接把口令显示出来（自用图方便）。设为 `0` 则隐藏 |
+| `UNLOCK_CODE` | 空 | 敏感操作口令（解锁报名 / 删缴费记录 / **删视频**）；留空则回退用 `ACCESS_CODE` |
+| `SHOW_UNLOCK_CODE` | 1 | 是否在口令弹框里直接把口令显示出来（自用图方便）。设为 `0` 则隐藏 |
+| `MEDIA_DIR` | ./media | 视频与封面存放目录 |
+| `MAX_UPLOAD_MB` | 2048 | 单个视频文件大小上限（MB） |
 
 ## 部署到云服务器（nginx 独立子域 bm.cypherx.top）
 
@@ -85,7 +94,28 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now badminton
 ```
 
+> 换了部署目录的话，除了 service 里的 `DB_PATH` / `MEDIA_DIR`，
+> 别忘了 nginx 里 `location /media/` 的 `alias` 也要跟着改，否则视频全部 404。
+
 5. 访问 `https://bm.cypherx.top/`，首次打开会要求输入 `ACCESS_CODE`（存在浏览器 localStorage，之后免输）。手机可「添加到主屏幕」当 App 用。
+
+### 视频相关的 nginx 配置（已在 `deploy/nginx-badminton.conf` 里）
+
+```nginx
+client_max_body_size 2048m;   # 默认只有 1MB，不改的话所有视频上传都会被 413 挡下
+client_body_timeout 600s;
+
+location /media/ {
+    alias /opt/badminton-tracker/media/;   # 视频由 nginx 直接读盘，不经 Python
+    add_header Accept-Ranges bytes;
+}
+location / {
+    proxy_pass http://127.0.0.1:8765;
+    proxy_request_buffering off;   # 上传直接透传，不在 nginx 落地成临时文件
+    proxy_read_timeout 3600s;      # 视频可能长时间暂停，默认 60s 会中途 504
+    proxy_send_timeout 3600s;
+}
+```
 
 ### ⚠️ 两个部署时容易踩的坑
 
@@ -113,13 +143,78 @@ localStorage 按**协议 + 域名 + 端口**三者隔离，其中任何一项变
 
 重新输入一次即可，之后照常免输。同理，换过地址的桌面图标要删掉重加。
 
+## 训练视频库
+
+访问 `/videos.html`（或点顶部「视频库」）。用来把自己的训练视频按动作分组管起来，顺手记一下看到哪儿了。
+
+### 上传
+
+点工具栏的「上传」展开面板 → 选文件（可多选）→ 填分组 → 「开始上传」。
+
+- **标题**自动取文件名去掉后缀
+- **序号**自动从文件名开头的数字提取（`008-侧滑抄球.mp4` → `008`），提取不到的按分组内已有最大序号往后排
+- **封面**由浏览器在上传前就地截取视频第 2 秒那一帧，不用另外准备图片。截图失败（比如浏览器解不了这个编码）不影响上传，只是列表里显示一个播放占位图
+- **分组**默认带入当前筛选的分组
+
+实测手机端从相册选也可以，`.mov` / `.mp4` / `.webm` 等常见格式都收。
+
+上传是**串行**的：并发会在家庭宽带上互相抢带宽，反而更慢。单个文件超过 `MAX_UPLOAD_MB` 会当场拦下，不会传到一半才失败。
+
+> 上传接口刻意没用 `multipart/form-data`：Python 3.13 起标准库已经移除了 `cgi` 模块，
+> 自己解析 multipart 很容易把整个文件读进内存。现在的做法是「元数据走 query、文件体走裸 body」，
+> 服务端 512KB 一块地落盘，传几百 MB 内存占用也是平的。
+
+### 播放
+
+点卡片进播放浮层。视频支持**拖动进度条**（后端自己实现了 HTTP Range 的 206 分片响应），
+看到一半关掉，下次点开自动**从上次位置接着播**。
+
+> Safari / iOS 起播前会先发一个 `Range: bytes=0-1` 的探测请求，拿不到 206 就直接不播 ——
+> 这也是为什么这里必须自己实现 Range，`SimpleHTTPRequestHandler` 原生不支持分片响应。
+
+看完的视频卡片右上角会标「已看」，看了一半的在封面下沿显示一条进度线。
+
+### 管理
+
+点「管理」进入管理模式，每张卡片出现「编辑 / 删除」：
+
+- **编辑**：改标题、分组、序号，也可以「换封面」（自己挑一张图）
+- **删除**：行内确认后弹出**口令框**，输入 `UNLOCK_CODE` 才真正删除
+
+删除会**连同磁盘上的视频文件和封面一起清掉**，和删缴费记录一样属于破坏性操作，所以共用同一个口令。
+
+### ⚠️ 视频目录不做口令校验
+
+`<video>` 标签没法带自定义请求头，所以 `/media/` 下的文件是**不需要口令**就能访问的，
+靠的是文件名是 32 位随机十六进制（猜不到），而不是鉴权。
+
+如果介意，两个选择：
+
+```nginx
+# 在 nginx 的 location /media/ 里限定来源
+allow 1.2.3.4;      # 你家宽带出口 IP
+deny all;
+
+# 或者套一层 Basic Auth
+auth_basic "restricted";
+auth_basic_user_file /etc/nginx/.htpasswd-media;
+```
+
+另外 `location /media/` 里的 `alias` **必须和实际部署目录一致**
+（默认写的是 `/opt/badminton-tracker/media/`）。改过目录名而没改这里，视频会全部 404。
+
 ## 数据库表
 
 - `attendance(day, created_at, locked)` — 参训日期，一天一条，主键为日期
 - `payment(id, pay_date, amount, sessions, note)` — 缴费记录
 - `meta(k, v)` — 键值表，目前存 `locked_at`（最近一次锁定时间）
+- `video(id, title, grp, seq, filename, cover, duration, size, progress, note, created_at)` — 训练视频
 
 剩余课时 = 缴费记录 `sessions` 之和 − 参训记录总数。
+
+`video` 里 `filename` / `cover` 存的是磁盘上的随机文件名，`size = 0` 的行不会出现在列表里
+（上传中途断了就是这个状态）。分组顺序按该分组**第一个视频的 id** 排，
+也就是「先建哪个分组哪个在前」—— 按分组名的中文 Unicode 排序毫无意义，会排成「体能/手法/步法」这种码位顺序。
 
 ### 记录锁定
 
@@ -164,4 +259,19 @@ chmod +x tools/backup.sh
 
 ```bash
 cp /opt/badminton-tracker/data/training.db ~/training.db.bak
+```
+
+**视频不在备份范围内**，而且也不该每天全量拷一遍。`media/` 目录建议这样处理：
+
+```bash
+# 定期同步到别处（只补新增和改动的，已经传过的不重传）
+rsync -a --ignore-existing /opt/badminton-tracker/media/ ~/badminton-media-backup/
+```
+
+注意 `media/origin` 和 `media/cover` 的文件名是随机串，直接看目录分不清哪个是哪个视频。
+要知道「哪个文件对应哪个视频」，查数据库：
+
+```bash
+sqlite3 /opt/badminton-tracker/data/training.db \
+  "SELECT id, title, grp, seq, filename, cover FROM video ORDER BY grp, seq;"
 ```
