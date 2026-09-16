@@ -1,9 +1,4 @@
-/* 训练视频库 —— 依赖 style.css 里的设计变量与基础组件 */
-
-/* 分组筛选：横向可滚动，不换行，避免分组多了把卡片挤下去 */
-.vchips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; margin-bottom: 10px; }
-.vchips::-webkit-scrollbar { display: none; }
-.vchips .chip { flex: none; }
+/* 训练视频 —— 时间线布局 + 上传。依赖 style.css 里的设计变量与基础组件 */
 
 .vmeta {
   display: flex;
@@ -22,34 +17,91 @@
 .updrop { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .updrop .note { margin: 0; }
 .upfields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
-.upform code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-  background: #f2f4f6;
+.upfields.one { grid-template-columns: 1fr; }
+
+select {
+  font: inherit;
+  font-size: 14px;
+  padding: 7px 9px;
   border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 1px 4px;
-  color: var(--accent-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  /* 自绘下拉小三角，避免各平台原生控件风格打架 */
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 28px;
 }
 
+.tipbox {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  background: #f7f8f9;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-top: 10px;
+}
+.tipbox b { color: var(--accent-strong); font-weight: 600; }
+.tipbox.warn { background: #fdf6ec; border-color: #f0dcc0; color: #8a6d3b; }
+.tipbox.warn b { color: #8a6d3b; }
+
 .uplist { list-style: none; margin: 8px 0 0; padding: 0; }
-.uplist li { padding: 7px 0; border-bottom: 1px solid #f0f1f3; font-size: 12px; }
+.uplist li { padding: 8px 0; border-bottom: 1px solid #f0f1f3; font-size: 12px; }
 .uplist li:last-child { border-bottom: none; }
-.uplist .urow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.uplist .urow { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .uplist .uname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.uplist .ustate { flex: none; color: var(--muted); }
+.uplist .ustate { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
 .uplist .ustate.done { color: var(--accent-strong); }
 .uplist .ustate.err { color: var(--danger); }
-.uplist .ubar { height: 3px; border-radius: 2px; background: #eef0f2; margin-top: 5px; overflow: hidden; }
-.uplist .ubar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+.uplist .ubar { height: 3px; border-radius: 2px; background: #eef0f2; margin-top: 6px; overflow: hidden; }
+.uplist .ubar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
 
-/* ---------- 卡片网格 ---------- */
+/* ---------- 时间线 ---------- */
+
+.tl-day { position: relative; padding-left: 20px; margin-bottom: 16px; }
+.tl-day::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 10px;
+  bottom: -16px;
+  width: 1px;
+  background: var(--line);
+}
+.tl-day:last-child { margin-bottom: 4px; }
+.tl-day:last-child::before { content: none; }
+.tl-day::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 5px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--accent);
+  box-sizing: border-box;
+}
+
+.tl-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.tl-date { font-size: 14px; font-weight: 600; }
+.tl-meta { font-size: 12px; color: var(--muted); }
+.tl-day .vgrid { margin-bottom: 0; }
+
+/* ---------- 卡片 ---------- */
 
 .vgrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
   gap: 10px;
-  margin-bottom: 12px;
 }
 
 .vcard {
@@ -82,7 +134,7 @@
   margin-left: 3px;
 }
 
-.vcard .vseq,
+.vcard .vtime,
 .vcard .vdur,
 .vcard .vdone {
   position: absolute;
@@ -92,8 +144,9 @@
   line-height: 1;
   padding: 3px 5px;
   border-radius: 4px;
+  font-variant-numeric: tabular-nums;
 }
-.vcard .vseq { top: 6px; left: 6px; }
+.vcard .vtime { top: 6px; left: 6px; }
 .vcard .vdone { top: 6px; right: 6px; background: rgba(29, 158, 117, .9); }
 .vcard .vdur { right: 6px; bottom: 6px; }
 
@@ -112,9 +165,10 @@
   min-height: 35px;
 }
 .vcard .vsub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.vcard .vsub .cut { color: var(--accent-strong); }
 
 .vcard .vadm { display: flex; gap: 6px; padding: 0 9px 9px; }
-/* 编辑时铺满整行，148px 的格子里塞不下三个输入框 */
+/* 编辑时铺满整行，148px 的格子里塞不下几个输入框 */
 .vcard.editing { grid-column: 1 / -1; cursor: default; }
 .vcard.editing:active { background: var(--card); }
 .vedit { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 9px; }

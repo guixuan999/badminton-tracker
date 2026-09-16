@@ -82,18 +82,25 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 CREATE TABLE IF NOT EXISTS video (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    title      TEXT    NOT NULL,
-    grp        TEXT    NOT NULL DEFAULT '',
-    seq        TEXT    NOT NULL DEFAULT '',
+    title      TEXT    NOT NULL DEFAULT '',
+    note       TEXT    NOT NULL DEFAULT '',
+    shot_at    TEXT    NOT NULL DEFAULT '',
     filename   TEXT    NOT NULL,
     cover      TEXT    NOT NULL DEFAULT '',
     duration   REAL    NOT NULL DEFAULT 0,
     size       INTEGER NOT NULL DEFAULT 0,
+    raw_size   INTEGER NOT NULL DEFAULT 0,
     progress   REAL    NOT NULL DEFAULT 0,
-    note       TEXT    NOT NULL DEFAULT '',
     created_at TEXT    NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_video_grp ON video(grp, seq, id);
+"""
+
+# 索引必须和建表分开、等补列迁移跑完再建。
+# 否则老库（video 表还没有 shot_at 列）会在这里直接报 "no such column: shot_at"，
+# 服务连启动都启动不了 —— SCHEMA 里的 CREATE INDEX 是没机会等迁移的。
+INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_payment_date ON payment(pay_date);
+CREATE INDEX IF NOT EXISTS idx_video_shot ON video(shot_at);
 """
 
 
@@ -125,6 +132,9 @@ def init_db():
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(attendance)")}
         if "locked" not in cols:
             conn.execute("ALTER TABLE attendance ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
+        _migrate_video(conn)
+        # 索引放在补列之后：老库没这一列时，先建索引会直接报 no such column
+        conn.executescript(INDEXES)
         conn.commit()
     finally:
         conn.close()
@@ -134,6 +144,37 @@ def init_db():
             os.remove(os.path.join(MEDIA_TMP, name))
         except OSError:
             pass
+
+
+def _migrate_video(conn):
+    """把视频表从最早的「分组 + 序号」课程式结构迁到时间线结构。
+
+    视频库第一版是按动作分组、看序号的（grp/seq），后来定位改成「按时间线记录
+    每次训练」，改为 shot_at + note。老库里的 grp/seq 没有日期信息，就用上传时间
+    回填 shot_at，总比空着强。
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(video)")}
+    if not cols:
+        return
+    for name, decl in (
+        ("note", "TEXT NOT NULL DEFAULT ''"),
+        ("shot_at", "TEXT NOT NULL DEFAULT ''"),
+        ("raw_size", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if name not in cols:
+            conn.execute("ALTER TABLE video ADD COLUMN %s %s" % (name, decl))
+    conn.execute(
+        "UPDATE video SET shot_at = substr(created_at, 1, 16) || ':00' WHERE shot_at = ''"
+    )
+    if "grp" in cols or "seq" in cols:
+        # DROP COLUMN 要求先摘掉依赖它的索引；老版本 SQLite 不支持就当没这回事
+        conn.execute("DROP INDEX IF EXISTS idx_video_grp")
+        for c in ("grp", "seq"):
+            if c in cols:
+                try:
+                    conn.execute("ALTER TABLE video DROP COLUMN " + c)
+                except sqlite3.OperationalError:
+                    pass
 
 
 def valid_day(value):
@@ -369,60 +410,68 @@ def _rm(path):
         pass
 
 
-def normalize_seq(value):
-    """序号统一成 3 位：8 → 008。这样字典序就等于数字序，列表天然有序。"""
-    s = str(value or "").strip()
-    if s.isdigit():
-        return s.zfill(3)
-    return s[:12]
+SHOT_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$")
 
 
-def _seq_key(seq):
-    """自然序排序键，兜住「有的是 008、有的没填序号」的混合情况。"""
-    parts = re.split(r"(\d+)", str(seq or ""))
-    return [int(p) if i % 2 else p.lower() for i, p in enumerate(parts)]
+def parse_shot_at(value, default=None):
+    """把 'YYYY-MM-DD' / 'YYYY-MM-DD HH:MM' / 'YYYY-MM-DD HH:MM:SS' 统一成完整时间串。
+
+    拍摄时间是这个模块的排序主轴（时间线按它倒序），所以统一格式比省几个字节重要。
+    """
+    if not isinstance(value, str):
+        return default
+    m = SHOT_RE.match(value.strip())
+    if not m:
+        return default
+    y, mo, d, hh, mi, ss = m.groups()
+    try:
+        dt = datetime(int(y), int(mo), int(d), int(hh or 0), int(mi or 0), int(ss or 0))
+    except ValueError:
+        return default
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def list_videos(group=None, keyword=None):
+def list_videos(keyword=None):
+    """按拍摄时间倒序返回，最新的训练在最前面。"""
     conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT id, title, grp, seq, filename, cover, duration, size, progress, note, created_at "
-            "FROM video WHERE size > 0"
+            "SELECT id, title, note, shot_at, filename, cover, duration, size, raw_size, progress "
+            "FROM video WHERE size > 0 ORDER BY shot_at DESC, id DESC"
         ).fetchall()
-        # 分组顺序 = 该分组第一个视频的 id（即用户先建哪个分组哪个在前）。
-        # 按分组名的中文排序没有意义（会变成 体能/手法/步法 这种码位顺序）。
-        order = {
-            r["grp"]: r["ord"]
-            for r in conn.execute("SELECT grp, MIN(id) AS ord FROM video GROUP BY grp")
-        }
     finally:
         conn.close()
 
     items = [dict(r) for r in rows]
-    if group:
-        items = [v for v in items if (v["grp"] or "") == group]
     if keyword:
         kw = keyword.lower()
-        items = [v for v in items if kw in (v["title"] + " " + (v["note"] or "")).lower()]
-    items.sort(key=lambda v: (order.get(v["grp"] or "", 1 << 62), _seq_key(v["seq"]), v["id"]))
+        items = [
+            v for v in items
+            if kw in ((v["title"] or "") + " " + (v["note"] or "")).lower()
+        ]
 
     for v in items:
         # 相对路径：挂在根路径 / 子路径 / 子域下都能直接用，和后端接口保持一致
         v["url"] = "media/origin/" + v["filename"]
         v["cover_url"] = ("media/cover/" + v["cover"]) if v["cover"] else ""
+        v["day"] = (v["shot_at"] or "")[:10]
+        v["time"] = (v["shot_at"] or "")[11:16]
         v["watched"] = bool(v["duration"] > 0 and v["progress"] > v["duration"] * 0.9)
+        # 压缩省下的体积；原片本来就小的时候不为负
+        v["saved"] = max(0, int(v["raw_size"] or 0) - int(v["size"] or 0))
         v.pop("filename", None)
         v.pop("cover", None)
     return items
 
 
-def video_groups():
+def video_days():
+    """时间线用的按天汇总，最新的天排最前。"""
     conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT grp AS name, COUNT(*) AS count, COALESCE(SUM(size), 0) AS size "
-            "FROM video WHERE size > 0 GROUP BY grp ORDER BY MIN(id)"
+            "SELECT substr(shot_at, 1, 10) AS day, COUNT(*) AS count, "
+            "COALESCE(SUM(duration), 0) AS duration, COALESCE(SUM(size), 0) AS size "
+            "FROM video WHERE size > 0 GROUP BY day ORDER BY day DESC"
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -433,12 +482,19 @@ def videos_stats():
     conn = get_conn()
     try:
         r = conn.execute(
-            "SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS s, "
+            "SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS s, COALESCE(SUM(duration), 0) AS d, "
+            "COALESCE(SUM(CASE WHEN raw_size > size THEN raw_size - size ELSE 0 END), 0) AS saved, "
             "COALESCE(SUM(CASE WHEN duration > 0 AND progress > duration * 0.9 "
             "             THEN 1 ELSE 0 END), 0) AS w "
             "FROM video WHERE size > 0"
         ).fetchone()
-        return {"count": int(r["c"]), "size": int(r["s"]), "watched": int(r["w"])}
+        return {
+            "count": int(r["c"]),
+            "size": int(r["s"]),
+            "duration": float(r["d"]),
+            "saved": int(r["saved"]),
+            "watched": int(r["w"]),
+        }
     finally:
         conn.close()
 
@@ -453,7 +509,7 @@ def get_video(pid):
 
 
 # 允许被改的字段，写死白名单，避免把 SQL 拼出别的列
-VIDEO_EDITABLE = ("title", "grp", "seq", "note")
+VIDEO_EDITABLE = ("title", "note", "shot_at")
 
 
 def update_video(pid, fields):
@@ -474,15 +530,16 @@ def update_video(pid, fields):
         conn.close()
 
 
-def add_video(title, grp, seq, filename, duration=0.0, size=0, note=""):
+def add_video(title, note, shot_at, filename, duration=0.0, size=0, raw_size=0):
     conn = get_conn()
     try:
         cur = conn.execute(
-            "INSERT INTO video(title, grp, seq, filename, cover, duration, size, progress, note, created_at) "
-            "VALUES(?, ?, ?, ?, '', ?, ?, 0, ?, ?)",
+            "INSERT INTO video(title, note, shot_at, filename, cover, duration, size, raw_size, "
+            "                  progress, created_at) "
+            "VALUES(?, ?, ?, ?, '', ?, ?, ?, 0, ?)",
             (
-                title, grp, seq, filename, float(duration or 0), int(size or 0),
-                note or "", datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                title, note, shot_at, filename, float(duration or 0), int(size or 0),
+                int(raw_size or 0), datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             ),
         )
         conn.commit()
@@ -730,16 +787,22 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json({"error": "不支持的视频格式：%s" % (ext or "无后缀")}, 400)
 
         title = (qs.get("title") or "").strip()[:120] or os.path.splitext(raw_name)[0][:120]
-        grp = (qs.get("group") or "").strip()[:40]
-        seq = normalize_seq(qs.get("seq"))
         note = (qs.get("note") or "").strip()[:200]
+        shot_at = parse_shot_at(
+            qs.get("shot_at"), datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
 
         try:
             duration = max(0.0, float(qs.get("duration") or 0))
         except ValueError:
             duration = 0.0
-        if duration > 3600 * 24 or duration != duration:  # 挡住 NaN / 离谱值
+        if duration != duration or duration > 3600 * 12:  # 挡住 NaN / 离谱值
             duration = 0.0
+
+        try:
+            raw_size = max(0, int(qs.get("raw_size") or 0))
+        except ValueError:
+            raw_size = 0
 
         stored = uuid.uuid4().hex + ext
         tmp = os.path.join(MEDIA_TMP, stored + ".part")
@@ -753,10 +816,14 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json({"error": "写入失败：%s" % exc}, 500)
 
         os.replace(tmp, os.path.join(MEDIA_ORIGIN, stored))
-        pid = add_video(title, grp, seq, stored, duration, written, note)
+        # raw_size 是压缩前的原始体积，用来显示「压掉了多少」。
+        # 客户端可能没传，或者传了个比实际还小的值（那种就是没压缩），都按实际大小算。
+        if raw_size < written:
+            raw_size = written
+        pid = add_video(title, note, shot_at, stored, duration, written, raw_size)
         return self._json({
-            "ok": True, "id": pid, "title": title, "group": grp, "seq": seq,
-            "url": "media/origin/" + stored, "size": written,
+            "ok": True, "id": pid, "title": title, "shot_at": shot_at,
+            "url": "media/origin/" + stored, "size": written, "raw_size": raw_size,
         })
 
     # routes
@@ -796,9 +863,8 @@ class Handler(SimpleHTTPRequestHandler):
             qs = self._query()
             payload = {
                 "ok": True,
-                "groups": video_groups(),
-                "videos": list_videos((qs.get("group") or "").strip() or None,
-                                      (qs.get("q") or "").strip() or None),
+                "days": video_days(),
+                "videos": list_videos((qs.get("q") or "").strip() or None),
                 "stats": videos_stats(),
                 "max_upload_mb": MAX_UPLOAD_MB,
             }
@@ -892,16 +958,14 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": "视频不存在"}, 404)
             fields = {}
             if "title" in body:
-                title = str(body.get("title") or "").strip()[:120]
-                if not title:
-                    return self._json({"error": "标题不能为空"}, 400)
-                fields["title"] = title
-            if "group" in body:
-                fields["grp"] = str(body.get("group") or "").strip()[:40]
-            if "seq" in body:
-                fields["seq"] = normalize_seq(body.get("seq"))
+                fields["title"] = str(body.get("title") or "").strip()[:120]
             if "note" in body:
                 fields["note"] = str(body.get("note") or "").strip()[:200]
+            if "shot_at" in body:
+                shot = parse_shot_at(body.get("shot_at"))
+                if not shot:
+                    return self._json({"error": "时间格式应为 YYYY-MM-DD HH:MM"}, 400)
+                fields["shot_at"] = shot
             update_video(vid, fields)
             return self._json({"ok": True, "id": vid})
 

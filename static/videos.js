@@ -2,12 +2,20 @@
   "use strict";
 
   var CODE_KEY = "badminton_access_code";
+  var DOW = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+  // 画质档位。edge 是最长边像素（按手机看的清晰度定的），
+  // vbps/abps 是目标码率 —— 决定体积的主要是它，不是分辨率
+  var QUALITY = {
+    low:  { edge: 854,  vbps: 800000,  abps: 64000, label: "省流 480p" },
+    mid:  { edge: 960,  vbps: 1200000, abps: 64000, label: "标准 540p" },
+    high: { edge: 1280, vbps: 2000000, abps: 96000, label: "清晰 720p" }
+  };
 
   var state = {
     videos: [],
-    groups: [],
-    stats: { count: 0, size: 0, watched: 0 },
-    group: null,
+    days: [],
+    stats: { count: 0, size: 0, duration: 0, saved: 0, watched: 0 },
     manage: false,
     editing: null,
     maxUploadMb: 2048,
@@ -22,6 +30,8 @@
   };
 
   var $ = function (id) { return document.getElementById(id); };
+
+  function pad(n) { return n < 10 ? "0" + n : "" + n; }
 
   function escapeHTML(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -38,11 +48,35 @@
   }
 
   function fmtDur(sec) {
-    var s = Math.max(0, Math.floor(Number(sec) || 0));
+    var s = Math.max(0, Math.round(Number(sec) || 0));
     var m = Math.floor(s / 60);
     var h = Math.floor(m / 60);
-    if (h > 0) { return h + ":" + String(m % 60).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); }
-    return m + ":" + String(s % 60).padStart(2, "0");
+    if (h > 0) { return h + ":" + pad(m % 60) + ":" + pad(s % 60); }
+    return m + ":" + pad(s % 60);
+  }
+
+  /** 累计时长的显示。mm:ss 是「视频时长」的写法，用在合计上会像钟点，
+      所以合计一律写成「34 分钟」「1 小时 12 分」。 */
+  function fmtTotal(sec) {
+    var s = Math.max(0, Math.round(Number(sec) || 0));
+    if (s < 60) { return s + " 秒"; }
+    var m = Math.round(s / 60);
+    if (m < 60) { return m + " 分钟"; }
+    return Math.floor(m / 60) + " 小时 " + (m % 60) + " 分";
+  }
+
+  function fmtDay(day) {
+    if (!day) { return "未标注日期"; }
+    var p = day.split("-");
+    var d = new Date(+p[0], +p[1] - 1, +p[2]);
+    var today = new Date();
+    today.setHours(0, 0, 0, 0);
+    var label = (+p[1]) + "月" + (+p[2]) + "日 " + DOW[d.getDay()];
+    var diff = Math.round((today - d) / 86400000);
+    if (diff === 0) { return "今天 · " + label; }
+    if (diff === 1) { return "昨天 · " + label; }
+    if (d.getFullYear() !== today.getFullYear()) { return d.getFullYear() + "年" + label; }
+    return label;
   }
 
   function headers(json) {
@@ -72,7 +106,7 @@
     el.textContent = msg;
     el.className = "toast show";
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { el.className = "toast"; }, 1800);
+    toastTimer = setTimeout(function () { el.className = "toast"; }, 2000);
   }
 
   function showGate() {
@@ -90,11 +124,9 @@
   // ---------- 数据 ----------
 
   function load() {
-    // 一次性取全量，分组筛选在本地做 —— 个人库就几十上百条，
-    // 本地过滤点起来没有延迟，也避免了「未分组」没法用接口筛选的边角情况
     return request("api/videos").then(function (d) {
       state.videos = d.videos || [];
-      state.groups = d.groups || [];
+      state.days = d.days || [];
       state.stats = d.stats || state.stats;
       state.maxUploadMb = d.max_upload_mb || 2048;
       state.unlockRequired = d.unlock_required !== false;
@@ -103,94 +135,100 @@
     });
   }
 
-  // state.group: null = 全部；"" = 未分组；其余为分组名
-  function visible() {
-    if (state.group === null) { return state.videos; }
-    return state.videos.filter(function (v) { return (v.grp || "") === state.group; });
-  }
-
   // ---------- 渲染 ----------
 
   function render() {
-    renderChips();
     renderStats();
-    renderDatalist();
-    renderGrid();
-  }
-
-  function renderChips() {
-    var html = '<button class="chip' + (state.group === null ? " active" : "") +
-      '" data-group="__all__">全部 ' + state.stats.count + "</button>";
-    state.groups.forEach(function (g) {
-      var name = g.name || "";
-      var active = state.group !== null && state.group === name;
-      html += '<button class="chip' + (active ? " active" : "") +
-        '" data-group="' + (name ? escapeHTML(name) : "__none__") + '">' +
-        (name ? escapeHTML(name) : "未分组") + " " + g.count + "</button>";
-    });
-    $("group-chips").innerHTML = html;
+    renderTimeline();
   }
 
   function renderStats() {
     var s = state.stats;
-    $("vstats").textContent = state.manage
-      ? "管理中 · 共 " + s.count + " 个"
-      : "共 " + s.count + " 个 · 已看 " + s.watched + " · 占用 " + fmtSize(s.size);
+    if (state.manage) {
+      $("vstats").textContent = "管理中 · 共 " + s.count + " 个";
+    } else {
+      var txt = s.count + " 个视频 · 累计 " + fmtTotal(s.duration) + " · " + fmtSize(s.size);
+      if (s.saved > 1024 * 1024) { txt += " · 压缩省下 " + fmtSize(s.saved); }
+      $("vstats").textContent = txt;
+    }
     $("btn-manage").textContent = state.manage ? "完成" : "管理";
   }
 
-  function renderDatalist() {
-    $("up-group-list").innerHTML = state.groups
-      .filter(function (g) { return g.name; })
-      .map(function (g) { return '<option value="' + escapeHTML(g.name) + '"></option>'; })
-      .join("");
+  function renderTimeline() {
+    var el = $("timeline");
+    var empty = $("vempty");
+
+    if (!state.videos.length) {
+      el.innerHTML = "";
+      empty.textContent = "还没有视频。点上方「上传」，把贵大王的训练视频传上来。";
+      empty.style.display = "block";
+      return;
+    }
+    empty.style.display = "none";
+
+    // 服务端已按 shot_at 倒序返回，这里顺着顺序切天即可，不用再排一遍
+    var order = [], map = {};
+    state.videos.forEach(function (v) {
+      var day = v.day || "";
+      if (!map[day]) { map[day] = []; order.push(day); }
+      map[day].push(v);
+    });
+
+    el.innerHTML = order.map(function (day) {
+      var items = map[day];
+      var dur = 0, size = 0;
+      items.forEach(function (v) { dur += v.duration || 0; size += v.size || 0; });
+      return '<div class="tl-day">' +
+        '<div class="tl-head"><span class="tl-date">' + escapeHTML(fmtDay(day)) + "</span>" +
+          '<span class="tl-meta">' + items.length + " 个 · " + fmtTotal(dur) + " · " + fmtSize(size) + "</span>" +
+        "</div>" +
+        '<div class="vgrid">' + items.map(cardHTML).join("") + "</div>" +
+      "</div>";
+    }).join("");
   }
 
-  // 「008-侧滑抄球」这类标题里已经带了序号，卡片左上角又有一个序号角标，
-  // 两块一起显示就重复了。标题里的序号跟角标一致时把前缀去掉。
-  function stripSeqPrefix(title, seq) {
-    var t = String(title || "").trim();
-    if (!seq || !/^\d+$/.test(seq)) { return t; }
-    var m = t.match(/^0*(\d+)\s*[-–—_.、·:：\s]\s*(.+)$/);
-    if (m && String(parseInt(m[1], 10)) === String(parseInt(seq, 10))) { return m[2]; }
-    return t;
-  }
-
-  function shortTitle(v) {
-    return stripSeqPrefix(v.title, v.seq);
+  function cardLabel(v) {
+    return (v.note || "").trim() || (v.title || "").trim() || "训练视频";
   }
 
   function cardHTML(v) {
     if (state.editing === v.id) { return editHTML(v); }
+
     var cover = v.cover_url
       ? '<img src="' + escapeHTML(v.cover_url) + '" alt="" loading="lazy">'
       : '<span class="ph"></span>';
     var pct = v.duration > 0 ? Math.min(100, Math.round(v.progress / v.duration * 100)) : 0;
     var prog = (pct > 0 && pct < 100) ? '<div class="vprog"><i style="width:' + pct + '%"></i></div>' : "";
+
+    var sub = fmtSize(v.size);
+    if (v.saved > 0 && v.raw_size > 0) {
+      sub += ' · <span class="cut">↓' + Math.round(v.saved / v.raw_size * 100) + "%</span>";
+    }
     var adm = state.manage
       ? '<div class="vadm"><button class="btn-mini" data-edit="' + v.id + '">编辑</button>' +
         '<button class="btn-mini danger" data-del="' + v.id + '">删除</button></div>'
       : "";
+
     return '<div class="vcard" data-play="' + v.id + '">' +
       '<div class="vcover">' + cover +
-        (v.seq ? '<span class="vseq">' + escapeHTML(v.seq) + "</span>" : "") +
+        (v.time ? '<span class="vtime">' + escapeHTML(v.time) + "</span>" : "") +
         (v.watched ? '<span class="vdone">已看</span>' : "") +
         (v.duration > 0 ? '<span class="vdur">' + fmtDur(v.duration) + "</span>" : "") +
       "</div>" + prog +
-      '<div class="vbody"><div class="vtitle">' + escapeHTML(shortTitle(v)) + "</div>" +
-        '<div class="vsub">' + (v.grp ? escapeHTML(v.grp) + " · " : "") + fmtSize(v.size) + "</div>" +
+      '<div class="vbody"><div class="vtitle">' + escapeHTML(cardLabel(v)) + "</div>" +
+        '<div class="vsub">' + sub + "</div>" +
       "</div>" + adm + "</div>";
   }
 
   function editHTML(v) {
     return '<div class="vcard editing" data-edit-card="' + v.id + '">' +
       '<div class="vedit">' +
-        '<div class="vfull"><label class="field">标题</label><input type="text" data-f="title" value="' +
-          escapeHTML(v.title) + '"></div>' +
-        '<div><label class="field">分组</label><input type="text" data-f="group" list="up-group-list" value="' +
-          escapeHTML(v.grp || "") + '"></div>' +
-        '<div><label class="field">序号</label><input type="text" data-f="seq" inputmode="numeric" value="' +
-          escapeHTML(v.seq || "") + '"></div>' +
+        '<div class="vfull"><label class="field">备注</label><input type="text" data-f="note" value="' +
+          escapeHTML(v.note || "") + '" placeholder="如 反手发球练习"></div>' +
+        '<div><label class="field">拍摄日期</label><input type="date" data-f="day" value="' +
+          escapeHTML((v.shot_at || "").slice(0, 10)) + '"></div>' +
+        '<div><label class="field">时间</label><input type="time" data-f="time" value="' +
+          escapeHTML((v.shot_at || "").slice(11, 16)) + '"></div>' +
         '<div class="vfull row" style="margin-top:2px">' +
           '<button class="btn-mini" data-save="' + v.id + '">保存</button>' +
           '<button class="btn-mini" data-cover="' + v.id + '">换封面</button>' +
@@ -200,20 +238,6 @@
       "</div></div>";
   }
 
-  function renderGrid() {
-    var list = visible();
-    var empty = $("vempty");
-    if (!list.length) {
-      empty.textContent = state.videos.length
-        ? "这个分组下还没有视频"
-        : "还没有视频，点上方「上传」添加第一个。";
-      empty.style.display = "block";
-    } else {
-      empty.style.display = "none";
-    }
-    $("vgrid").innerHTML = list.map(cardHTML).join("");
-  }
-
   // ---------- 播放 ----------
 
   function play(id) {
@@ -221,9 +245,12 @@
     if (!v) { return; }
     state.current = v;
     state.lastSent = 0;
-    $("player-title").textContent = v.title;
-    $("player-foot").textContent = (v.grp ? v.grp + " · " : "") + fmtSize(v.size) +
-      (v.duration > 0 ? " · " + fmtDur(v.duration) : "");
+    $("player-title").textContent = cardLabel(v) + " · " + (v.shot_at || "").slice(0, 16);
+    var bits = [fmtSize(v.size)];
+    if (v.saved > 0 && v.raw_size > 0) {
+      bits.push("原片 " + fmtSize(v.raw_size) + "，压掉 " + Math.round(v.saved / v.raw_size * 100) + "%");
+    }
+    $("player-foot").textContent = bits.join(" · ");
 
     var el = $("player");
     el.src = v.url;
@@ -279,218 +306,492 @@
     }).catch(function () { /* 进度丢了不打扰用户，下次还在 */ });
   }
 
-  // ---------- 上传 ----------
+  // ---------- 压缩 ----------
 
-  function extractSeq(name) {
-    var m = name.match(/^0*(\d{1,4})\s*[-–—_.、·:：\s]/);
-    if (!m) { m = name.match(/^0*(\d{1,4})(?=\D|$)/); }
-    return m ? String(parseInt(m[1], 10)).padStart(3, "0") : "";
+  var MIME = null;
+
+  function pickMime() {
+    if (MIME !== null) { return MIME; }
+    MIME = "";
+    if (!window.MediaRecorder) { return MIME; }
+    // 优先 MP4/H.264 —— iPhone、安卓、桌面通吃。
+    // WebM 只有安卓和桌面能播，iPhone 上大概率打不开，所以放在后面当退路。
+    var cands = [
+      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+      "video/mp4;codecs=avc1.4D401F,mp4a.40.2",
+      "video/mp4;codecs=avc1",
+      "video/mp4",
+      "video/webm;codecs=vp8,opus",
+      "video/webm"
+    ];
+    for (var i = 0; i < cands.length; i++) {
+      try { if (MediaRecorder.isTypeSupported(cands[i])) { MIME = cands[i]; break; } } catch (e) { /* next */ }
+    }
+    return MIME;
+  }
+
+  function extForMime(mime) {
+    return mime.indexOf("video/mp4") === 0 ? ".mp4" : ".webm";
+  }
+
+  /**
+   * 取视频时长。正常文件 loadedmetadata 时就有；
+   * 但 MediaRecorder 录出来的 WebM（以及部分碎片化文件）没写时长元数据，
+   * duration 会是 Infinity —— 这时 seek 到一个极大值能逼浏览器把真实时长算出来。
+   */
+  function resolveDuration(video, cb) {
+    var d = video.duration;
+    if (isFinite(d) && d > 0) { cb(d); return; }
+    var done = false;
+    var timer = setTimeout(function () {
+      if (done) { return; }
+      done = true;
+      video.ontimeupdate = null;
+      cb(0);
+    }, 5000);
+    video.ontimeupdate = function () {
+      if (done) { return; }
+      done = true;
+      clearTimeout(timer);
+      video.ontimeupdate = null;
+      var real = video.duration;
+      cb(isFinite(real) && real > 0 ? real : 0);
+    };
+    try { video.currentTime = 1e7; }
+    catch (e) { clearTimeout(timer); done = true; video.ontimeupdate = null; cb(0); }
+  }
+
+  /** 只读元数据 + 抓一帧当封面。不整段解码，很快。 */
+  function probeVideo(file) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file);
+      var video = document.createElement("video");
+      var settled = false;
+      var timer = setTimeout(function () { finish(reject, new Error("读取视频超时")); }, 30000);
+
+      function finish(fn, arg) {
+        if (settled) { return; }
+        settled = true;
+        clearTimeout(timer);
+        try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ }
+        video.removeAttribute("src");
+        fn(arg);
+      }
+
+      video.preload = "metadata";
+      video.muted = true;
+      video.playsInline = true;
+      video.onerror = function () { finish(reject, new Error("浏览器解不了这个视频格式")); };
+      video.onloadedmetadata = function () {
+        var w = video.videoWidth, h = video.videoHeight;
+        if (!w || !h) { return finish(reject, new Error("读不到画面尺寸")); }
+
+        resolveDuration(video, function (dur) {
+          video.onseeked = function () {
+            var shot = null;
+            try {
+              var tw = Math.min(640, w);
+              var c = document.createElement("canvas");
+              c.width = tw;
+              c.height = Math.round(h * tw / w);
+              c.getContext("2d").drawImage(video, 0, 0, c.width, c.height);
+              shot = c;
+            } catch (e) { shot = null; }
+            if (!shot) { return finish(resolve, { duration: dur, width: w, height: h, cover: null }); }
+            shot.toBlob(function (b) {
+              finish(resolve, { duration: dur, width: w, height: h, cover: b || null });
+            }, "image/jpeg", 0.82);
+          };
+          // 取第 2 秒（或时长的 10%）那一帧，避开片头黑场
+          var at = dur > 0 ? Math.min(2, Math.max(0.1, dur * 0.1)) : 0.1;
+          try { video.currentTime = at; }
+          catch (e) { finish(resolve, { duration: dur, width: w, height: h, cover: null }); }
+        });
+      };
+      video.src = url;
+    });
+  }
+
+  /**
+   * 用 MediaRecorder 把视频重编码成小尺寸。
+   *
+   * 做法是「边播边录」：把 video 的画面逐帧画到缩小后的 canvas，
+   * canvas.captureStream() 出画面轨，再从 video 接一条音轨，一起喂给 MediaRecorder。
+   *
+   * ⚠️ 所以它是**实时**的 —— 5 分钟的视频就要压 5 分钟，这是 MediaRecorder 的
+   *    固有特性（按墙上时间打时间戳），换不出更快的办法。
+   *    真要快就得用 WebCodecs + 自己写 MP4 封装，那是另一个量级的工作量，不值当。
+   */
+  function compressVideo(file, quality, onProgress) {
+    var mime = pickMime();
+    return new Promise(function (resolve, reject) {
+      if (!mime) { return reject(new Error("这台浏览器不支持在本地压缩视频")); }
+
+      var url = URL.createObjectURL(file);
+      var video = document.createElement("video");
+      var chunks = [];
+      var rec = null, audioCtx = null, stopDraw = null, guard = null;
+      var settled = false;
+
+      function cleanup() {
+        if (guard) { clearTimeout(guard); guard = null; }
+        if (stopDraw) { try { stopDraw(); } catch (e) { /* ignore */ } stopDraw = null; }
+        try { if (rec && rec.state !== "inactive") { rec.stop(); } } catch (e) { /* ignore */ }
+        try { if (audioCtx && audioCtx.state !== "closed") { audioCtx.close(); } } catch (e) { /* ignore */ }
+        try { video.pause(); } catch (e) { /* ignore */ }
+        try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ }
+        video.removeAttribute("src");
+      }
+      function fail(msg) { if (settled) { return; } settled = true; cleanup(); reject(new Error(msg)); }
+      function ok(val) { if (settled) { return; } settled = true; cleanup(); resolve(val); }
+
+      video.onerror = function () { fail("这台设备的浏览器解不了这个视频"); };
+      video.playsInline = true;
+      video.preload = "auto";
+
+      video.onloadedmetadata = function () {
+        var vw = video.videoWidth, vh = video.videoHeight;
+        if (!vw || !vh) { return fail("读不到画面尺寸"); }
+
+        resolveDuration(video, function (dur) {
+          if (!(dur > 0)) { return fail("读不到视频时长"); }
+          // duration 是 Infinity 的文件会走 seek 探测那一支，探完播放头已经跑到末尾了，
+          // 必须先退回开头再录，否则一按播放就立刻结束
+          if (video.currentTime > 0.05) {
+            video.onseeked = function () { video.onseeked = null; begin(dur); };
+            try { video.currentTime = 0; } catch (e) { begin(dur); }
+          } else {
+            begin(dur);
+          }
+        });
+      };
+
+      function begin(dur) {
+        var vw = video.videoWidth, vh = video.videoHeight;
+        var scale = Math.min(1, quality.edge / Math.max(vw, vh));
+        // H.264 要求宽高是偶数，否则部分播放器会花屏
+        var w = Math.max(2, Math.round(vw * scale / 2) * 2);
+        var h = Math.max(2, Math.round(vh * scale / 2) * 2);
+
+        var canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        var ctx = canvas.getContext("2d", { alpha: false });
+
+        var stream = canvas.captureStream(30);
+        var hasAudio = false;
+        try {
+          var AC = window.AudioContext || window.webkitAudioContext;
+          if (AC) {
+            audioCtx = new AC();
+            if (audioCtx.state === "suspended") { audioCtx.resume(); }
+            var src = audioCtx.createMediaElementSource(video);
+            var dest = audioCtx.createMediaStreamDestination();
+            // 只接到 MediaStreamDestination，不接 audioContext.destination ——
+            // 否则压缩的这几分钟里手机/电脑会一直外放
+            src.connect(dest);
+            var at = dest.stream.getAudioTracks();
+            for (var i = 0; i < at.length; i++) { stream.addTrack(at[i]); }
+            hasAudio = at.length > 0;
+          }
+        } catch (e) { audioCtx = null; hasAudio = false; }
+
+        var opts = { mimeType: mime, videoBitsPerSecond: quality.vbps };
+        if (hasAudio) { opts.audioBitsPerSecond = quality.abps; }
+        try { rec = new MediaRecorder(stream, opts); }
+        catch (e) { return fail("这台设备不支持按这个参数压缩"); }
+
+        rec.ondataavailable = function (e) { if (e.data && e.data.size) { chunks.push(e.data); } };
+        rec.onerror = function () { fail("压缩过程中出错"); };
+
+        function drawOnce() { try { ctx.drawImage(video, 0, 0, w, h); } catch (e) { /* ignore */ } }
+
+        (function startDraw() {
+          if (video.requestVideoFrameCallback) {
+            // 按视频真实出帧节奏画，比 rAF 更贴
+            var id = 0;
+            var cb = function () { drawOnce(); id = video.requestVideoFrameCallback(cb); };
+            id = video.requestVideoFrameCallback(cb);
+            stopDraw = function () { if (id) { video.cancelVideoFrameCallback(id); } };
+          } else {
+            var rid = requestAnimationFrame(function loop() { drawOnce(); rid = requestAnimationFrame(loop); });
+            stopDraw = function () { cancelAnimationFrame(rid); };
+          }
+        })();
+
+        video.ontimeupdate = function () {
+          if (onProgress && dur) { onProgress(Math.min(1, video.currentTime / dur), video.currentTime, dur); }
+        };
+        video.onended = function () {
+          drawOnce();
+          // 多留一点，让尾帧和音频尾巴都进到录制里
+          setTimeout(function () { try { rec.stop(); } catch (e) { /* ignore */ } }, 300);
+        };
+        rec.onstop = function () {
+          var type = mime.indexOf("video/mp4") === 0 ? "video/mp4" : "video/webm";
+          var blob = new Blob(chunks, { type: type });
+          if (!blob.size) { return fail("压缩结果为空"); }
+          ok({ blob: blob, width: w, height: h, duration: dur, audio: hasAudio, mime: mime });
+        };
+
+        rec.start(500);
+        var p = video.play();
+        if (p && p.catch) {
+          p.catch(function () {
+            // 多半是自动播放被拦（带声音起播需要用户手势）。
+            // 静音重试：画面照样能压，代价是丢掉音频 —— 总比整个失败强。
+            video.muted = true;
+            var p2 = video.play();
+            if (p2 && p2.catch) {
+              p2.catch(function () { fail("浏览器拦住了自动播放，请再点一次「开始」"); });
+            }
+          });
+        }
+        // 兜底：ended 万一没触发也不能一直挂着
+        guard = setTimeout(function () {
+          try { rec.stop(); } catch (e) { fail("压缩超时"); }
+        }, (dur + 60) * 1000);
+      };
+
+      video.src = url;
+    });
+  }
+
+  // ---------- 上传队列 ----------
+
+  function shotAtFor(file, dateOverride) {
+    var d = new Date(file.lastModified || Date.now());
+    if (isNaN(d.getTime())) { d = new Date(); }
+    var day = dateOverride ||
+      (d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()));
+    return day + " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":00";
   }
 
   function pickFiles(files) {
     if (!files || !files.length) { return; }
-    var group = $("up-group").value.trim();
-    var baseSeq = $("up-seq").value.trim();
-    var usedMax = 0;
-    state.videos.forEach(function (v) {
-      if ((v.grp || "") === group && /^\d+$/.test(v.seq || "")) {
-        usedMax = Math.max(usedMax, parseInt(v.seq, 10));
-      }
-    });
-    var next = /^\d+$/.test(baseSeq) ? parseInt(baseSeq, 10) : usedMax + 1;
-
     Array.prototype.forEach.call(files, function (f) {
-      var item = {
+      state.queue.push({
         file: f,
         title: f.name.replace(/\.[^.]+$/, ""),
-        group: group,
-        seq: extractSeq(f.name),
-        size: f.size,
+        note: "",
+        quality: $("up-quality").value,
+        shotAt: shotAtFor(f, $("up-date").value),
         duration: 0,
         cover: null,
-        coverTried: false,
+        blob: null,
+        compressed: false,
+        skipped: false,
+        notice: "",
+        fallback: "",
+        audio: true,
         status: "wait",
         percent: 0,
-        error: "",
-        xhr: null
-      };
-      if (item.seq) { usedMax = Math.max(usedMax, parseInt(item.seq, 10)); }
-      else { item.seq = String(next).padStart(3, "0"); next++; }
-      state.queue.push(item);
-    });
-    state.queue.sort(function (a, b) { return a.seq.localeCompare(b.seq); });
-    renderQueue();
-    prepareCovers();
-  }
-
-  function prepareCovers() {
-    // 串行截封面：同时解码多个视频在手机上很容易把浏览器拖死
-    var pending = state.queue.filter(function (it) {
-      return it.status === "wait" && !it.coverTried;
-    });
-    var i = 0;
-    (function next() {
-      if (i >= pending.length) { return; }
-      var it = pending[i++];
-      it.coverTried = true;
-      captureCover(it.file, function (blob, duration) {
-        it.cover = blob;
-        if (duration) { it.duration = duration; }
-        next();
+        eta: 0,
+        error: ""
       });
-    })();
+    });
+    applyFormToQueue();
+    renderQueue();
   }
 
-  function captureCover(file, done) {
-    var url = URL.createObjectURL(file);
-    var video = document.createElement("video");
-    var finished = false;
-    var timer = setTimeout(function () { finish(null, 0); }, 12000);
-
-    function finish(blob, duration) {
-      if (finished) { return; }
-      finished = true;
-      clearTimeout(timer);
-      try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ }
-      video.removeAttribute("src");
-      done(blob || null, duration || 0);
-    }
-
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = "metadata";
-    video.onloadedmetadata = function () {
-      var d = video.duration;
-      if (!d || !isFinite(d)) { finish(null, 0); return; }
-      // 取第 2 秒（或时长的 10%）那一帧，避免抓到片头黑场
-      try { video.currentTime = Math.min(2, Math.max(0.1, d * 0.1)); }
-      catch (e) { finish(null, Math.floor(d)); }
-    };
-    video.onseeked = function () {
-      var d = Math.floor(video.duration || 0);
-      try {
-        var w = video.videoWidth, h = video.videoHeight;
-        if (!w || !h) { finish(null, d); return; }
-        var tw = Math.min(640, w);
-        var canvas = document.createElement("canvas");
-        canvas.width = tw;
-        canvas.height = Math.round(h * tw / w);
-        canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-        canvas.toBlob(function (b) { finish(b, d); }, "image/jpeg", 0.82);
-      } catch (e) {
-        finish(null, d);
-      }
-    };
-    video.onerror = function () { finish(null, 0); };
-    video.src = url;
-    video.load();
+  /** 表单改了就同步到还没处理的条目上，这样先选文件后调参数也能生效 */
+  function applyFormToQueue() {
+    var dateOverride = $("up-date").value;
+    var note = $("up-note").value.trim();
+    var quality = $("up-quality").value;
+    state.queue.forEach(function (it) {
+      if (it.status === "done") { return; }
+      it.quality = quality;
+      if (note) { it.note = note; }
+      it.shotAt = shotAtFor(it.file, dateOverride);
+    });
   }
 
-  var STATUS_TEXT = { wait: "等待", up: "", cover: "写封面", done: "完成", err: "" };
+  var STATUS_TEXT = {
+    wait: "等待", probe: "读取中", comp: "压缩中", skip: "原片已够小",
+    up: "上传中", cover: "写封面", done: "完成", err: ""
+  };
+
+  function setStatus(item, status, text) {
+    item.status = status;
+    if (status !== "comp") { item.eta = 0; }
+    renderQueue();
+  }
 
   function renderQueue() {
     var el = $("up-list");
     if (!state.queue.length) { el.innerHTML = ""; return; }
     el.innerHTML = state.queue.map(function (it) {
-      var text = it.status === "up" ? it.percent + "%"
-        : it.status === "err" ? (it.error || "失败")
-        : STATUS_TEXT[it.status];
+      var text;
+      if (it.status === "comp") {
+        text = "压缩 " + it.percent + "%" + (it.eta > 1 ? " · 约剩 " + fmtDur(it.eta) : "");
+      } else if (it.status === "up") {
+        text = "上传 " + it.percent + "%";
+      } else if (it.status === "err") {
+        text = it.error || "失败";
+      } else {
+        text = STATUS_TEXT[it.status] || "";
+      }
       var cls = "ustate" + (it.status === "done" ? " done" : it.status === "err" ? " err" : "");
-      var bar = it.status === "up"
+      var bar = (it.status === "comp" || it.status === "up")
         ? '<div class="ubar"><i style="width:' + it.percent + '%"></i></div>' : "";
-      return "<li><div class=\"urow\"><span class=\"uname\">" +
-        escapeHTML(it.seq + " " + stripSeqPrefix(it.title, it.seq)) +
-        '</span><span class="' + cls + '">' + escapeHTML(text) + "</span></div>" + bar + "</li>";
+      var sub = fmtDay(it.shotAt.slice(0, 10)).replace(/^今天 · |^昨天 · /, "") +
+        " " + it.shotAt.slice(11, 16) + " · " + fmtSize(it.file.size) +
+        (it.notice ? " · " + it.notice : "") +
+        (it.fallback ? " · " + it.fallback + "，改传原片" : "");
+      return '<li><div class="urow"><span class="uname">' + escapeHTML(it.title) +
+        '</span><span class="' + cls + '">' + escapeHTML(text) + "</span></div>" +
+        '<div class="vsub" style="font-size:11px;color:var(--muted);margin-top:2px">' +
+        escapeHTML(sub) + "</div>" + bar + "</li>";
     }).join("");
   }
 
-  function startUpload() {
+  function startQueue() {
     if (state.uploading) { return; }
     var items = state.queue.filter(function (it) {
       return it.status === "wait" || it.status === "err";
     });
-    if (!items.length) { toast("没有待上传的文件"); return; }
+    if (!items.length) { toast("没有待处理的文件"); return; }
+
+    applyFormToQueue();
+    renderQueue();
+
     var limit = state.maxUploadMb * 1024 * 1024;
-    var over = items.filter(function (it) { return it.size > limit; });
+    var over = items.filter(function (it) { return it.file.size > limit; });
     if (over.length) {
       toast("有 " + over.length + " 个文件超过 " + state.maxUploadMb + " MB");
       return;
     }
 
     state.uploading = true;
-    $("btn-up-start").textContent = "上传中…";
+    $("btn-up-start").textContent = "处理中…";
     var i = 0;
     (function next() {
       if (i >= items.length) {
         state.uploading = false;
-        $("btn-up-start").textContent = "开始上传";
-        toast("上传完成");
+        $("btn-up-start").textContent = "开始";
+        var failed = state.queue.filter(function (it) { return it.status === "err"; }).length;
         state.queue = state.queue.filter(function (it) { return it.status !== "done"; });
         renderQueue();
+        toast(failed ? "完成，有 " + failed + " 个失败" : "全部完成");
         return load();
       }
-      // 串行上传：并发会在家庭宽带上互相抢带宽，反而更慢
-      uploadOne(items[i++], next);
+      processOne(items[i++]).then(next);
     })();
   }
 
-  function uploadOne(item, done) {
-    item.status = "up";
+  function processOne(item) {
     item.percent = 0;
     item.error = "";
-    renderQueue();
+    item.notice = "";
+    item.fallback = "";
+    setStatus(item, "probe", "");
 
-    var qs = "?filename=" + encodeURIComponent(item.file.name) +
-      "&title=" + encodeURIComponent(item.title) +
-      "&group=" + encodeURIComponent(item.group) +
-      "&seq=" + encodeURIComponent(item.seq) +
-      "&duration=" + encodeURIComponent(item.duration || 0);
+    var q = QUALITY[item.quality] || QUALITY.mid;
 
-    var xhr = new XMLHttpRequest();
-    xhr.open("POST", "api/videos/upload" + qs, true);
-    xhr.setRequestHeader("Content-Type", "application/octet-stream");
-    var code = localStorage.getItem(CODE_KEY);
-    if (code) { xhr.setRequestHeader("X-Access-Code", code); }
+    return probeVideo(item.file).then(function (meta) {
+      item.duration = meta.duration;
+      item.cover = meta.cover;
 
-    xhr.upload.onprogress = function (e) {
-      if (e.lengthComputable) {
-        item.percent = Math.round(e.loaded / e.total * 100);
-        renderQueue();
+      if (!pickMime()) {
+        item.skipped = true;
+        item.notice = "这台浏览器不支持本地压缩";
+        return;
       }
-    };
-    xhr.onload = function () {
-      var d = {};
-      try { d = JSON.parse(xhr.responseText); } catch (e) { /* ignore */ }
-      if (xhr.status === 200 && d.ok) {
-        if (item.cover) {
-          item.status = "cover";
-          renderQueue();
-          // 封面失败不算上传失败，视频本身已经存好了
-          uploadCover(d.id, item.cover, function () {
-            item.status = "done";
-            item.percent = 100;
-            item.file = null;
-            renderQueue();
-            done();
-          });
-        } else {
-          item.status = "done";
-          item.percent = 100;
-          item.file = null;
-          renderQueue();
-          done();
+      if (!(meta.duration > 0)) {
+        // 读不到时长就没法估算目标体积，也没法给进度和超时兜底 —— 直接传原片最稳
+        item.skipped = true;
+        item.notice = "读不到时长";
+        return;
+      }
+      // 预估压完的体积：原片本来就比目标小的话，压完反而更差，直接传原片
+      var est = meta.duration * (q.vbps + q.abps) / 8;
+      if (item.file.size <= est * 1.15) {
+        item.skipped = true;
+        item.notice = "原片已够小";
+        return;
+      }
+      setStatus(item, "comp", "");
+      return compressVideo(item.file, q, function (p, cur, dur) {
+        item.percent = Math.round(p * 100);
+        item.eta = Math.max(0, dur - cur);
+        renderQueue();
+      }).then(function (res) {
+        item.compressed = true;
+        item.blob = res.blob;
+        item.mime = res.mime;
+        item.audio = res.audio;
+        if (!item.duration && res.duration) { item.duration = res.duration; }
+        if (res.blob.size >= item.file.size) {
+          // 压完比原片还大（原片本来就很省），那就别用压缩结果
+          item.compressed = false;
+          item.blob = null;
+          item.skipped = true;
+          item.notice = "压缩后反而更大，用原片";
         }
-      } else {
-        item.status = "err";
-        item.error = d.error || ("HTTP " + xhr.status);
-        renderQueue();
-        done();
-      }
-    };
-    xhr.onerror = function () { item.status = "err"; item.error = "网络中断"; renderQueue(); done(); };
-    xhr.onabort = function () { item.status = "err"; item.error = "已取消"; renderQueue(); done(); };
-    item.xhr = xhr;
-    xhr.send(item.file);
+      });
+    }).catch(function (err) {
+      // 读不出来 / 压不动都退回原片：后端只负责存字节，不挑内容
+      item.skipped = true;
+      item.fallback = err.message || "压缩失败";
+    }).then(function () {
+      return uploadItem(item);
+    }).then(function () {
+      setStatus(item, "done", "");
+    }).catch(function (err) {
+      item.status = "err";
+      item.error = err.message || "上传失败";
+      renderQueue();
+    });
+  }
+
+  function uploadItem(item) {
+    return new Promise(function (resolve, reject) {
+      var payload = item.blob || item.file;
+      // 压过的要按实际容器改后缀：mov 进来是 mp4 出去，叫 .mov 会误导人
+      var name = item.blob
+        ? item.file.name.replace(/\.[^.]+$/, "") + extForMime(item.mime || pickMime())
+        : item.file.name;
+
+      var qs = "?filename=" + encodeURIComponent(name) +
+        "&title=" + encodeURIComponent(item.title) +
+        "&note=" + encodeURIComponent(item.note || "") +
+        "&shot_at=" + encodeURIComponent(item.shotAt) +
+        "&duration=" + encodeURIComponent(Math.round(item.duration || 0)) +
+        "&raw_size=" + encodeURIComponent(item.file.size);
+
+      setStatus(item, "up", "");
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", "api/videos/upload" + qs, true);
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      var code = localStorage.getItem(CODE_KEY);
+      if (code) { xhr.setRequestHeader("X-Access-Code", code); }
+
+      xhr.upload.onprogress = function (e) {
+        if (e.lengthComputable) {
+          item.percent = Math.round(e.loaded / e.total * 100);
+          renderQueue();
+        }
+      };
+      xhr.onload = function () {
+        var d = {};
+        try { d = JSON.parse(xhr.responseText); } catch (e) { /* ignore */ }
+        if (xhr.status !== 200 || !d.ok) {
+          reject(new Error(d.error || ("HTTP " + xhr.status)));
+          return;
+        }
+        item.percent = 100;
+        if (item.cover) {
+          setStatus(item, "cover", "");
+          uploadCover(d.id, item.cover, function () { resolve(); });
+        } else {
+          resolve();
+        }
+      };
+      xhr.onerror = function () { reject(new Error("网络中断")); };
+      xhr.onabort = function () { reject(new Error("已取消")); };
+      xhr.send(payload);
+    });
   }
 
   function uploadCover(id, blob, done) {
@@ -503,12 +804,34 @@
     xhr.send(blob);
   }
 
-  // ---------- 敏感操作口令弹框（删除视频） ----------
+  function renderTip() {
+    var tip = $("up-tip");
+    var q = QUALITY[$("up-quality").value] || QUALITY.mid;
+    var mime = pickMime();
+    if (!mime) {
+      tip.className = "tipbox warn";
+      tip.innerHTML = "<b>这台浏览器不支持在本地压缩视频</b>，会直接上传原片。" +
+        "想压小一点，用 Chrome 打开这个页面再传。";
+      return;
+    }
+    if (mime.indexOf("video/mp4") !== 0) {
+      tip.className = "tipbox warn";
+      tip.innerHTML = "这台浏览器只能压成 <b>WebM</b>，iPhone 上多半打不开。" +
+        "要压成各平台通吃的 MP4，用 Chrome 或 Safari 再传一次。";
+      return;
+    }
+    tip.className = "tipbox";
+    tip.innerHTML = "上传前会在浏览器里压到 <b>" + q.label + "</b>，约每 1 分钟占 " +
+      fmtSize(q.vbps / 8 * 60) + "。<br>压缩是实时的（1 分钟素材约需 1 分钟），" +
+      "期间请让页面保持在前台，别切走。<br>原片本来就不大的会直接传。";
+  }
+
+  // ---------- 敏感操作口令弹框（删除） ----------
 
   function openDialog(kind, payload) {
     if (!state.unlockRequired) { return submitDialog({ kind: kind, payload: payload }, ""); }
     state.dialog = { kind: kind, payload: payload };
-    $("dialog-title").textContent = "删除「" + payload.title + "」";
+    $("dialog-title").textContent = "删除「" + payload.label + "」";
     $("dialog-ok").textContent = "删除";
     $("dialog-input").value = "";
     $("dialog-err").textContent = "";
@@ -557,11 +880,14 @@
       var el = card.querySelector('[data-f="' + f + '"]');
       return el ? el.value.trim() : "";
     };
-    var title = val("title");
-    if (!title) { toast("标题不能为空"); return; }
+    var day = val("day");
+    var time = val("time") || "00:00";
+    if (!day) { toast("请选拍摄日期"); return; }
     request("api/videos/update", {
       method: "POST",
-      body: JSON.stringify({ id: id, title: title, group: val("group"), seq: val("seq") })
+      body: JSON.stringify({
+        id: id, note: val("note"), shot_at: day + " " + time
+      })
     }).then(function () {
       state.editing = null;
       toast("已保存");
@@ -575,14 +901,6 @@
   // ---------- 事件 ----------
 
   function bindEvents() {
-    $("group-chips").addEventListener("click", function (e) {
-      var chip = e.target.closest(".chip[data-group]");
-      if (!chip) { return; }
-      var g = chip.getAttribute("data-group");
-      state.group = g === "__all__" ? null : (g === "__none__" ? "" : g);
-      render();
-    });
-
     $("btn-manage").addEventListener("click", function () {
       state.manage = !state.manage;
       state.editing = null;
@@ -592,48 +910,57 @@
     $("btn-upload").addEventListener("click", function () {
       var open = $("up-form").style.display !== "none";
       $("up-form").style.display = open ? "none" : "block";
-      if (!open) { $("up-group").value = state.group || ""; }
+      if (!open) { renderTip(); }
     });
 
     $("btn-up-cancel").addEventListener("click", function () {
       $("up-form").style.display = "none";
     });
-
     $("up-pick").addEventListener("click", function () { $("up-files").click(); });
-
     $("up-files").addEventListener("change", function () {
       pickFiles(this.files);
       this.value = "";
     });
+    $("btn-up-start").addEventListener("click", startQueue);
 
-    $("btn-up-start").addEventListener("click", startUpload);
+    ["up-date", "up-note", "up-quality"].forEach(function (id) {
+      $(id).addEventListener("change", function () {
+        applyFormToQueue();
+        renderQueue();
+        if (id === "up-quality") { renderTip(); }
+      });
+      $(id).addEventListener("input", function () {
+        if (id === "up-note") { applyFormToQueue(); renderQueue(); }
+      });
+    });
 
-    $("vgrid").addEventListener("click", function (e) {
-      if (e.target.closest(".vedit")) { return; }
+    $("timeline").addEventListener("click", function (e) {
       var edit = e.target.closest("[data-edit]");
-      if (edit) { state.editing = Number(edit.getAttribute("data-edit")); renderGrid(); return; }
+      if (edit) { state.editing = Number(edit.getAttribute("data-edit")); render(); return; }
       var del = e.target.closest("[data-del]");
       if (del) {
         var id = Number(del.getAttribute("data-del"));
         var v = findVideo(id);
-        if (v) { openDialog("delete", { id: id, title: v.title }); }
+        if (v) { openDialog("delete", { id: id, label: cardLabel(v) }); }
         return;
       }
       var save = e.target.closest("[data-save]");
       if (save) { saveEdit(Number(save.getAttribute("data-save"))); return; }
-      if (e.target.closest("[data-cancel-edit]")) { state.editing = null; renderGrid(); return; }
+      if (e.target.closest("[data-cancel-edit]")) { state.editing = null; render(); return; }
       var cov = e.target.closest("[data-cover]");
       if (cov) {
         var input = document.querySelector('[data-cover-file="' + cov.getAttribute("data-cover") + '"]');
         if (input) { input.click(); }
         return;
       }
-      if (state.editing) { return; }
+      // 「点卡片进播放」这一步必须放在上面所有按钮判断之后 ——
+      // .vedit 里的保存/换封面/取消都在这个容器里，先判 .vedit 会把它们一并吞掉
+      if (e.target.closest(".vedit") || state.editing) { return; }
       var playable = e.target.closest("[data-play]");
       if (playable) { play(Number(playable.getAttribute("data-play"))); }
     });
 
-    $("vgrid").addEventListener("change", function (e) {
+    $("timeline").addEventListener("change", function (e) {
       var input = e.target.closest("[data-cover-file]");
       if (!input || !input.files || !input.files[0]) { return; }
       var id = Number(input.getAttribute("data-cover-file"));
@@ -674,7 +1001,14 @@
       if (e.key !== "Escape") { return; }
       if ($("player-mask").style.display !== "none") { closePlayer(); }
       else if ($("dialog-mask").style.display !== "none") { closeDialog(); }
-      else if (state.editing) { state.editing = null; renderGrid(); }
+      else if (state.editing) { state.editing = null; render(); }
+    });
+
+    // 压缩期间切走标签页会拖慢甚至中断，提醒一下
+    window.addEventListener("beforeunload", function (e) {
+      if (!state.uploading) { return; }
+      e.preventDefault();
+      e.returnValue = "";
     });
   }
 

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#f5f6f7">
-<title>训练视频库</title>
+<title>贵大王的训练视频</title>
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="video.css">
 </head>
@@ -23,16 +23,15 @@
 
   <header class="top">
     <div class="me"><img class="avatar" src="img/boy.png" alt=""><span class="name">贵大王</span></div>
-    <h1>训练视频库</h1>
+    <h1>训练视频</h1>
   </header>
 
   <nav class="navrow">
     <a href="./">训练记录</a>
-    <a href="videos.html" class="active">视频库</a>
+    <a href="videos.html" class="active">训练视频</a>
   </nav>
 
   <div class="card">
-    <div class="vchips" id="group-chips"></div>
     <div class="vmeta">
       <span id="vstats"></span>
       <span class="vacts">
@@ -42,36 +41,45 @@
     </div>
 
     <div class="upform" id="up-form" style="display:none">
-      <div class="updrop" id="up-drop">
+      <div class="updrop">
         <input type="file" id="up-files" accept="video/*" multiple hidden>
-        <button id="up-pick">选择视频文件</button>
-        <span class="note" id="up-hint">可多选；手机端从相册选也可以</span>
+        <button id="up-pick">选择训练视频</button>
+        <span class="note">可多选，手机从相册选也行</span>
       </div>
+
       <div class="upfields">
         <div>
-          <label class="field">分组</label>
-          <input type="text" id="up-group" list="up-group-list" placeholder="如 步法" autocomplete="off">
-          <datalist id="up-group-list"></datalist>
+          <label class="field">拍摄日期（留空按视频自带时间）</label>
+          <input type="date" id="up-date">
         </div>
         <div>
-          <label class="field">起始序号（留空自动）</label>
-          <input type="text" id="up-seq" inputmode="numeric" placeholder="自动">
+          <label class="field">画质</label>
+          <select id="up-quality">
+            <option value="low">省流 480p</option>
+            <option value="mid" selected>标准 540p</option>
+            <option value="high">清晰 720p</option>
+          </select>
         </div>
       </div>
-      <div class="note">
-        标题取文件名去掉后缀；序号自动从文件名开头的数字提取（<code>008-侧滑抄球.mp4</code> → 008）。
-        封面在上传前会用浏览器就地截取一帧，不用另外准备图片。
+      <div class="upfields one">
+        <div>
+          <label class="field">备注（选填，这一批统一填）</label>
+          <input type="text" id="up-note" placeholder="如 反手发球练习" autocomplete="off">
+        </div>
       </div>
+
+      <div class="tipbox" id="up-tip"></div>
       <ul class="uplist" id="up-list"></ul>
+
       <div class="row" style="gap:8px; margin-top:10px">
-        <button class="btn-primary" id="btn-up-start" style="flex:1">开始上传</button>
+        <button class="btn-primary" id="btn-up-start" style="flex:1">开始</button>
         <button id="btn-up-cancel">收起</button>
       </div>
     </div>
   </div>
 
-  <div class="vgrid" id="vgrid"></div>
-  <div class="empty-tip" id="vempty" style="display:none">还没有视频，点上方「上传」添加第一个。</div>
+  <div class="tl" id="timeline"></div>
+  <div class="empty-tip" id="vempty" style="display:none"></div>
 
 </div>
 
