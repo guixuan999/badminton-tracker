@@ -368,6 +368,7 @@
         '<div class="vfull row" style="margin-top:2px">' +
           '<button class="btn-mini" data-save="' + v.id + '">保存</button>' +
           '<button class="btn-mini" data-cover="' + v.id + '">换封面</button>' +
+          '<button class="btn-mini" data-resnap="' + v.id + '">重截封面</button>' +
           '<button class="btn-mini" data-cancel-edit>取消</button>' +
           '<input type="file" accept="image/*" hidden data-cover-file="' + v.id + '">' +
         "</div>" +
@@ -498,6 +499,62 @@
   }
 
   /** 只读元数据 + 抓一帧当封面。不整段解码，很快。 */
+  /** seek 到指定时刻。成功 resolve(true)，超时或失败 resolve(false) —— 不抛异常。 */
+  function seekTo(video, t, timeoutMs) {
+    return new Promise(function (resolve) {
+      var settled = false;
+      var tm = setTimeout(function () {
+        if (settled) { return; }
+        settled = true;
+        video.onseeked = null;
+        resolve(false);
+      }, timeoutMs || 1500);
+      video.onseeked = function () {
+        if (settled) { return; }
+        settled = true;
+        clearTimeout(tm);
+        resolve(true);
+      };
+      try {
+        video.currentTime = t;
+      } catch (e) {
+        if (!settled) { settled = true; clearTimeout(tm); resolve(false); }
+      }
+    });
+  }
+
+  /** 画面平均亮度（0~255）。每 4 个像素采一个，判断是不是黑帧够用了 */
+  function lumaOf(ctx, w, h) {
+    var d = ctx.getImageData(0, 0, w, h).data;
+    var sum = 0, n = 0;
+    for (var i = 0; i < d.length; i += 16) {
+      sum += d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+      n++;
+    }
+    return n ? sum / n : 0;
+  }
+
+  /**
+   * 截封面的候选时间点。
+   *
+   * 原来是「第 2 秒或时长的 10%」这**一个固定点**，短视频就落在 0.1×时长 上 ——
+   * 而那正是片头。摄像头刚启动的一两秒往往还是黑的（自动曝光/对焦没完成、
+   * 编码器关键帧未就绪），手机拍的也常带片头黑场，于是封面就是全黑的。
+   *
+   * 改成在整段的前中部分取几个点，各截一帧、挑最亮的。正常视频里这个改动无感，
+   * 有黑头的视频就能自动避开。比值不出 0.6 是为了不落到结尾（有些片子结尾也是黑场）。
+   */
+  function frameCandidates(dur) {
+    if (!dur || !isFinite(dur) || dur <= 0) { return [0.1]; }
+    var out = [];
+    [0.15, 0.3, 0.45, 0.6].forEach(function (r) {
+      var t = Math.min(dur * r, Math.max(0, dur - 0.1));
+      t = Math.max(0.05, Math.round(t * 100) / 100);
+      if (out.indexOf(t) < 0) { out.push(t); }
+    });
+    return out;
+  }
+
   function probeVideo(file) {
     return new Promise(function (resolve, reject) {
       var url = URL.createObjectURL(file);
@@ -523,25 +580,41 @@
         if (!w || !h) { return finish(reject, new Error("读不到画面尺寸")); }
 
         resolveDuration(video, function (dur) {
-          video.onseeked = function () {
-            var shot = null;
-            try {
-              var tw = Math.min(640, w);
-              var c = document.createElement("canvas");
-              c.width = tw;
-              c.height = Math.round(h * tw / w);
-              c.getContext("2d").drawImage(video, 0, 0, c.width, c.height);
-              shot = c;
-            } catch (e) { shot = null; }
-            if (!shot) { return finish(resolve, { duration: dur, width: w, height: h, cover: null }); }
-            shot.toBlob(function (b) {
-              finish(resolve, { duration: dur, width: w, height: h, cover: b || null });
-            }, "image/jpeg", 0.82);
-          };
-          // 取第 2 秒（或时长的 10%）那一帧，避开片头黑场
-          var at = dur > 0 ? Math.min(2, Math.max(0.1, dur * 0.1)) : 0.1;
-          try { video.currentTime = at; }
-          catch (e) { finish(resolve, { duration: dur, width: w, height: h, cover: null }); }
+          var tw = Math.min(640, w);
+          var th = Math.round(h * tw / w);
+          var c = document.createElement("canvas");
+          c.width = tw;
+          c.height = th;
+          var ctx = c.getContext("2d");
+
+          var cands = frameCandidates(dur);
+          var best = null;   // { luma, blob }
+          var i = 0;
+
+          function step() {
+            if (i >= cands.length) {
+              return finish(resolve, {
+                duration: dur, width: w, height: h,
+                cover: best ? best.blob : null,
+              });
+            }
+            var at = cands[i++];
+            seekTo(video, at, 1500).then(function (ok) {
+              if (!ok) { return step(); }
+              var luma = 0;
+              try {
+                ctx.drawImage(video, 0, 0, tw, th);
+                luma = lumaOf(ctx, tw, th);
+              } catch (e) { luma = 0; }
+              // 不如已有的亮就不必再编码一张 jpeg
+              if (best && luma <= best.luma) { return step(); }
+              c.toBlob(function (b) {
+                if (b) { best = { luma: luma, blob: b }; }
+                step();
+              }, "image/jpeg", 0.82);
+            });
+          }
+          step();
         });
       };
       video.src = url;
@@ -1453,6 +1526,58 @@
     });
   }
 
+  /**
+   * 用服务器上那段视频重新截一帧当封面。
+   *
+   * 为什么需要它：早期版本截封面只取固定一个时间点（时长的 10%），
+   * 短视频正好落到片头的黑场里 —— 摄像头刚启动那一两秒画面是黑的。
+   * 视频和封面都已经落盘了，改代码救不回来，只能真的重新截一次。
+   *
+   * 只能在浏览器里做：服务端是 Python 标准库，解不了 H.264，
+   * 而截帧必须靠浏览器的解码器。视频是压过的，一般几 MB，取回来很快。
+   */
+  function resnapCover(id) {
+    var v = findVideo(id);
+    if (!v) { return; }
+    toast("正在取回视频…");
+
+    fetch(v.url).then(function (res) {
+      if (!res.ok) { throw new Error("取不到视频文件"); }
+      var total = Number(res.headers.get("Content-Length") || 0);
+      // 边读边报进度：大一点的视频光看「正在取回」会以为卡住了
+      if (!res.body || !res.body.getReader) { return res.blob(); }
+      var reader = res.body.getReader();
+      var chunks = [], got = 0;
+      function pump() {
+        return reader.read().then(function (r) {
+          if (r.done) { return new Blob(chunks, { type: "video/mp4" }); }
+          chunks.push(r.value);
+          got += r.value.length;
+          toast(total
+            ? "正在取回视频 " + Math.round(got / total * 100) + "%"
+            : "正在取回视频 " + fmtSize(got));
+          return pump();
+        });
+      }
+      return pump();
+    }).then(function (blob) {
+      if (!blob || !blob.size) { throw new Error("取到的视频是空的"); }
+      toast("正在重新截取…");
+      return probeVideo(new File([blob], "resnap.mp4", { type: blob.type || "video/mp4" }));
+    }).then(function (meta) {
+      if (!meta.cover) { throw new Error("这段视频截不出画面"); }
+      return new Promise(function (resolve) {
+        uploadCover(id, meta.cover, resolve);
+      });
+    }).then(function () {
+      toast("封面已重新截取");
+      state.editing = null;
+      return load();
+    }).catch(function (err) {
+      toast(err && err.message ? err.message : "重新截取失败");
+    });
+  }
+
   function uploadCover(id, blob, done) {
     var xhr = new XMLHttpRequest();
     xhr.open("POST", "api/videos/cover?id=" + id + "&filename=c.jpg", true);
@@ -1737,6 +1862,8 @@
         if (input) { input.click(); }
         return;
       }
+      var rs = e.target.closest("[data-resnap]");
+      if (rs) { resnapCover(Number(rs.getAttribute("data-resnap"))); return; }
       // 「点卡片进播放」这一步必须放在上面所有按钮判断之后 ——
       // .vedit 里的保存/换封面/取消都在这个容器里，先判 .vedit 会把它们一并吞掉
       if (e.target.closest(".vedit") || e.target.closest(".vlink") || state.editing) { return; }

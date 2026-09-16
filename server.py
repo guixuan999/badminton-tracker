@@ -744,6 +744,15 @@ class Handler(SimpleHTTPRequestHandler):
         kwargs["directory"] = STATIC_DIR
         super().__init__(*args, **kwargs)
 
+    def handle_one_request(self):
+        """浏览器切走页面、关标签、拖动进度条换连接时，会直接把 TCP 连接粗断，
+        这在日常使用里是常态。默认实现会让 socketserver 打一整屏 traceback，
+        日志里全是噪声，真出问题时反而看不见。这里安静收掉。"""
+        try:
+            super().handle_one_request()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            self.close_connection = True
+
     def log_message(self, fmt, *args):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
