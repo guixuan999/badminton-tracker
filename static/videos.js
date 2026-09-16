@@ -19,6 +19,8 @@
     manage: false,
     editing: null,
     linkFor: null,
+    collapsed: {},
+    tlReady: false,
     maxUploadMb: 2048,
     unlockRequired: true,
     unlockHint: "",
@@ -77,6 +79,20 @@
     if (diff === 0) { return "今天 · " + label; }
     if (diff === 1) { return "昨天 · " + label; }
     if (d.getFullYear() !== today.getFullYear()) { return d.getFullYear() + "年" + label; }
+    return label;
+  }
+
+  /** 时间线的日期行：年月日写全，避免跨年时看不出是哪一年 */
+  function fmtDayFull(day) {
+    if (!day) { return "未标注日期"; }
+    var p = day.split("-");
+    var d = new Date(+p[0], +p[1] - 1, +p[2]);
+    var label = (+p[0]) + "年" + (+p[1]) + "月" + (+p[2]) + "日 " + DOW[d.getDay()];
+    var today = new Date();
+    today.setHours(0, 0, 0, 0);
+    var diff = Math.round((today - d) / 86400000);
+    if (diff === 0) { return "今天 · " + label; }
+    if (diff === 1) { return "昨天 · " + label; }
     return label;
   }
 
@@ -180,6 +196,38 @@
     $("btn-resync").style.display = state.manage ? "" : "none";
   }
 
+  /** 按 年 → 月 → 日 三层分组。服务端已按 shot_at 倒序返回，顺着切即可，不用再排一遍。 */
+  function groupVideos() {
+    var years = [], ymap = {};
+    state.videos.forEach(function (v) {
+      var day = v.day || "";
+      var y = day.slice(0, 4) || "0000";
+      var m = day.slice(0, 7) || "0000-00";
+      var Y = ymap[y];
+      if (!Y) {
+        Y = ymap[y] = { key: y, list: [], months: [], mmap: {} };
+        years.push(Y);
+      }
+      var M = Y.mmap[m];
+      if (!M) {
+        M = Y.mmap[m] = { key: m, month: m.slice(5, 7), list: [], days: [], dmap: {} };
+        Y.months.push(M);
+      }
+      var D = M.dmap[day];
+      if (!D) { D = M.dmap[day] = { day: day, items: [] }; M.days.push(D); }
+      D.items.push(v);
+      M.list.push(v);
+      Y.list.push(v);
+    });
+    return years;
+  }
+
+  function sumOf(list) {
+    var dur = 0, size = 0;
+    list.forEach(function (v) { dur += v.duration || 0; size += v.size || 0; });
+    return list.length + " 个 · " + fmtTotal(dur) + " · " + fmtSize(size);
+  }
+
   function renderTimeline() {
     var el = $("timeline");
     var empty = $("vempty");
@@ -192,25 +240,76 @@
     }
     empty.style.display = "none";
 
-    // 服务端已按 shot_at 倒序返回，这里顺着顺序切天即可，不用再排一遍
-    var order = [], map = {};
+    var years = groupVideos();
+
+    // 头一次渲染只摊开最新数据所在的年和月，其余一律收起。
+    // 按天平铺的话，练上一年就是上百个分组，滚动条能拖到手酸。
+    if (!state.tlReady) {
+      years.forEach(function (Y, yi) {
+        if (yi > 0) { state.collapsed[Y.key] = true; }
+        Y.months.forEach(function (M, mi) {
+          if (yi > 0 || mi > 0) { state.collapsed[M.key] = true; }
+        });
+      });
+      state.tlReady = true;
+    }
+
+    el.innerHTML = years.map(function (Y) {
+      var yOpen = !state.collapsed[Y.key];
+      var html = '<section class="tl-year">' +
+        '<button type="button" class="tl-row tl-yrow" data-tly="' + Y.key + '">' +
+          '<span class="tl-caret">' + (yOpen ? "▾" : "▸") + "</span>" +
+          '<span class="tl-name">' + escapeHTML(Y.key) + " 年</span>" +
+          '<span class="tl-sum">' + sumOf(Y.list) + "</span>" +
+        "</button>";
+      if (!yOpen) { return html + "</section>"; }
+
+      html += Y.months.map(function (M) {
+        var mOpen = !state.collapsed[M.key];
+        var h = '<section class="tl-month">' +
+          '<button type="button" class="tl-row tl-mrow" data-tlm="' + M.key + '">' +
+            '<span class="tl-caret">' + (mOpen ? "▾" : "▸") + "</span>" +
+            '<span class="tl-name">' + (+M.month) + " 月</span>" +
+            '<span class="tl-sum">' + sumOf(M.list) + "</span>" +
+          "</button>";
+        if (!mOpen) { return h + "</section>"; }
+        h += '<div class="tl-mbody">' + M.days.map(function (D) {
+          return '<div class="tl-day">' +
+            '<div class="tl-head">' +
+              '<span class="tl-date">' + escapeHTML(fmtDayFull(D.day)) + "</span>" +
+              '<span class="tl-sum">' + sumOf(D.items) + "</span>" +
+            "</div>" +
+            '<div class="vgrid">' + D.items.map(cardHTML).join("") + "</div>" +
+          "</div>";
+        }).join("") + "</div>";
+        return h + "</section>";
+      }).join("");
+
+      return html + "</section>";
+    }).join("");
+  }
+
+  /** 某个年份下有数据的所有月份键 —— 折叠整年时要把它们一并标上 */
+  function monthsOfYear(year) {
+    var set = {};
     state.videos.forEach(function (v) {
       var day = v.day || "";
-      if (!map[day]) { map[day] = []; order.push(day); }
-      map[day].push(v);
+      if (day.slice(0, 4) === year) { set[day.slice(0, 7)] = true; }
     });
+    return Object.keys(set);
+  }
 
-    el.innerHTML = order.map(function (day) {
-      var items = map[day];
-      var dur = 0, size = 0;
-      items.forEach(function (v) { dur += v.duration || 0; size += v.size || 0; });
-      return '<div class="tl-day">' +
-        '<div class="tl-head"><span class="tl-date">' + escapeHTML(fmtDay(day)) + "</span>" +
-          '<span class="tl-meta">' + items.length + " 个 · " + fmtTotal(dur) + " · " + fmtSize(size) + "</span>" +
-        "</div>" +
-        '<div class="vgrid">' + items.map(cardHTML).join("") + "</div>" +
-      "</div>";
-    }).join("");
+  function toggleYear(year) {
+    // 折起整年时把名下的月一并折起，省得展开一年还要挨个月点一遍
+    var fold = !state.collapsed[year];
+    state.collapsed[year] = fold;
+    monthsOfYear(year).forEach(function (mk) { state.collapsed[mk] = fold; });
+    render();
+  }
+
+  function toggleMonth(key) {
+    state.collapsed[key] = !state.collapsed[key];
+    render();
   }
 
   function cardLabel(v) {
@@ -1261,6 +1360,11 @@
     });
 
     $("timeline").addEventListener("click", function (e) {
+      // 年和月的折叠切换排在最前面：它们是整块的标题条，不参与卡片上的其它判断
+      var ty = e.target.closest("[data-tly]");
+      if (ty) { toggleYear(ty.getAttribute("data-tly")); return; }
+      var tm = e.target.closest("[data-tlm]");
+      if (tm) { toggleMonth(tm.getAttribute("data-tlm")); return; }
       var edit = e.target.closest("[data-edit]");
       if (edit) { state.editing = Number(edit.getAttribute("data-edit")); render(); return; }
       // 点「直链」把完整地址摊在卡片上。只扔进剪贴板的话，手机上根本看不见拿到了什么

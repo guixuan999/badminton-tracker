@@ -105,6 +105,40 @@ select {
 
 /* ---------- 时间线 ---------- */
 
+/* 年 / 月 两层标题条：点一下折起或展开。层级越深缩进越多，
+   折叠状态下一屏能放下好几年的量，不用一直往下拖 */
+.tl-year { margin-bottom: 4px; }
+
+.tl-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 8px 2px;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.tl-row:hover { background: #fafafa; }
+.tl-row:active { opacity: .6; }
+.tl-caret { flex: none; width: 10px; font-size: 10px; color: var(--muted); }
+.tl-name { flex: none; font-weight: 600; }
+.tl-sum { margin-left: auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+.tl-yrow { border-bottom: 1px solid var(--line); border-radius: 0; margin-bottom: 4px; }
+.tl-yrow .tl-name { font-size: 14px; }
+
+/* 月份比年低一层：缩进 + 左侧细线，从属关系一眼可见 */
+.tl-month { margin-left: 5px; padding-left: 11px; border-left: 1px solid var(--line); }
+.tl-mrow { padding: 6px 2px; }
+.tl-mrow .tl-name { font-size: 13px; color: var(--accent-strong); }
+
+.tl-mbody { padding-top: 2px; }
+
 .tl-day { position: relative; padding-left: 20px; margin-bottom: 16px; }
 .tl-day::before {
   content: "";
@@ -132,7 +166,6 @@ select {
 
 .tl-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .tl-date { font-size: 14px; font-weight: 600; }
-.tl-meta { font-size: 12px; color: var(--muted); }
 .tl-day .vgrid { margin-bottom: 0; }
 
 /* ---------- 卡片 ---------- */
