@@ -2,6 +2,7 @@
   "use strict";
 
   var CODE_KEY = "badminton_access_code";
+  var LENS_KEY = "badminton_cam_lens";   // 记住用户挑的镜头（deviceId），下次打开还是它
   var DOW = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
   // 画质档位。edge 是最长边像素（按手机看的清晰度定的），
@@ -942,6 +943,7 @@
     startedAt: 0,
     timer: null,
     facing: "environment",
+    deviceId: null,     // 明确指定的镜头；null = 交给浏览器选默认后置（兼容旧行为）
     running: false,
     zoomWant: null      // 用户调过的倍数，换画质重新取流时带过去
   };
@@ -989,21 +991,100 @@
 
   function camConstraints() {
     var q = camQuality();
-    return {
-      video: {
-        facingMode: cam.facing,
-        width: { ideal: q.edge },
-        height: { ideal: Math.round(q.edge * 9 / 16) },
-        frameRate: { ideal: 30 }
-      },
-      audio: true
+    var video = {
+      width: { ideal: q.edge },
+      height: { ideal: Math.round(q.edge * 9 / 16) },
+      frameRate: { ideal: 30 }
     };
+    if (cam.deviceId) {
+      // 指定了具体镜头就只能用它。这里刻意不写 facingMode —— 两个约束同时给会打架，
+      // 浏览器可能"满足"了 facingMode 却把 deviceId 丢掉，结果还是主摄。
+      video.deviceId = { exact: cam.deviceId };
+    } else {
+      video.facingMode = cam.facing;
+    }
+    return { video: video, audio: true };
   }
 
   function camTrack() {
     if (!cam.stream) { return null; }
     var t = cam.stream.getVideoTracks();
     return t.length ? t[0] : null;
+  }
+
+  function lensSaved() {
+    try { return localStorage.getItem(LENS_KEY) || null; } catch (e) { return null; }
+  }
+
+  function lensSave(id) {
+    try {
+      if (id) { localStorage.setItem(LENS_KEY, id); } else { localStorage.removeItem(LENS_KEY); }
+    } catch (e) { /* 隐私模式下写不进去，忽略 */ }
+  }
+
+  /**
+   * 给枚举出来的摄像头起个能看懂的名字。
+   * 安卓 Chrome 的 label 形如 "camera2 2, facing back"，压根看不出哪颗是超广角；
+   * 中文 iOS 则是「后置超广角摄像头」。所以：认得出的关键词就翻译，认不出就退回原名。
+   */
+  function lensName(d, i) {
+    var raw = (d.label || "").trim();
+    var s = raw.toLowerCase();
+    var who = /front|前置|user/.test(s) ? "前置"
+            : (/back|后置|rear|environment/.test(s) ? "后置" : "");
+    var which = /ultra|超广角|0\.5/.test(s) ? "超广角"
+              : (/tele|长焦/.test(s) ? "长焦"
+              : (/wide|广角/.test(s) ? "广角" : ""));
+    var name = who + (which ? " " + which : "");
+    return name || raw || ("摄像头 " + (i + 1));
+  }
+
+  /**
+   * 列出所有摄像头，让人能挑到超广角那颗。
+   *   - 必须等 getUserMedia 拿到权限之后再枚举，否则 label 和 deviceId 都是空的
+   *   - 只有一颗头就把整行藏起来，不摆一个没得选的下拉
+   * 顺带把当前在用的那颗设成选中项；如果它在列表里找不到（浏览器给的是个"默认逻辑摄像头"），
+   * 就补一个「默认（自动）」选项并选中它，留一条退回自动的路。
+   */
+  function refreshLensList(track) {
+    var sel = $("cam-lens");
+    // 用户明确挑过的以 cam.deviceId 为准 —— 我们用的是 exact，不存在"悄悄换了一颗"的情况，
+    // 而浏览器回报的 deviceId 未必等于请求时给的那个（安卓上尤其如此）。
+    var active = cam.deviceId || "";
+    if (!active) {
+      try { active = (track && track.getSettings && track.getSettings().deviceId) || ""; } catch (e) { active = ""; }
+    }
+
+    navigator.mediaDevices.enumerateDevices().then(function (list) {
+      var cams = list.filter(function (d) { return d.kind === "videoinput" && d.deviceId; });
+      if (cams.length < 2) { sel.style.display = "none"; return; }
+
+      // 同名去重：一排「后置」根本分不清，给重复的加个序号
+      var counts = {}, seq = {};
+      cams.forEach(function (d, i) { var n = lensName(d, i); counts[n] = (counts[n] || 0) + 1; });
+      cams.forEach(function (d, i) {
+        var n = lensName(d, i);
+        if (counts[n] > 1) { seq[n] = (seq[n] || 0) + 1; n = n + " " + seq[n]; }
+        d._name = n;
+        d._rank = n.indexOf("后置") === 0 ? 0 : (n.indexOf("前置") === 0 ? 2 : 1);
+      });
+      cams.sort(function (a, b) { return a._rank - b._rank; });   // 后置排前面，拍训练用得上
+
+      var html = "";
+      var hasActive = false;
+      cams.forEach(function (d) {
+        if (d.deviceId === active) { hasActive = true; }
+        html += '<option value="' + escapeHTML(d.deviceId) + '">' + escapeHTML(d._name) + "</option>";
+      });
+      if (hasActive) {
+        sel.innerHTML = html;
+        sel.value = active;
+      } else {
+        sel.innerHTML = '<option value="">默认（自动）</option>' + html;
+        sel.value = "";
+      }
+      sel.style.display = "";
+    }).catch(function () { sel.style.display = "none"; });
   }
 
   function fmtZoom(v) {
@@ -1052,7 +1133,7 @@
     btn.className = "cam-btn" + (cam.running ? " rec" : "");
     btn.disabled = !cam.stream && !cam.running;
     $("cam-quality").disabled = cam.running;
-    $("cam-flip").disabled = cam.running;
+    $("cam-lens").disabled = cam.running;     // 换镜头要重新取流，录制中不给动
     $("cam-timer").style.display = cam.running ? "" : "none";
     if (!cam.running) { $("cam-timer").textContent = "00:00"; }
   }
@@ -1072,13 +1153,16 @@
       camMsg("");
       var track = camTrack();
       if (track) { setupZoom(track); }
+      refreshLensList(track);
       camUI();
-      // 只有一个摄像头就不摆「切换镜头」这个按钮
-      navigator.mediaDevices.enumerateDevices().then(function (list) {
-        var n = list.filter(function (d) { return d.kind === "videoinput"; }).length;
-        $("cam-flip").style.display = n > 1 ? "" : "none";
-      }).catch(function () { /* ignore */ });
     }).catch(function (err) {
+      // 存下来的镜头失效了（换了设备、或浏览器清过 deviceId）→ 清掉再试一次，别把人卡在报错上
+      if (cam.deviceId && err && err.name === "OverconstrainedError") {
+        cam.deviceId = null;
+        lensSave(null);
+        startPreview();
+        return;
+      }
       camMsg(camErrorText(err), true);
       camUI();
     });
@@ -1091,6 +1175,7 @@
     }
     cam.running = false;
     cam.startedAt = 0;
+    cam.deviceId = lensSaved();      // 上次挑的镜头（超广角）直接用，不用每次重选
     $("cam-mask").style.display = "flex";
     camUI();
     startPreview();
@@ -1705,9 +1790,12 @@
     $("cam-quality").addEventListener("change", function () {
       if (!cam.running) { startPreview(); }   // 换档就重新取流，约束才生效
     });
-    $("cam-flip").addEventListener("click", function () {
+    // 换镜头（超广角/主摄/前置）要重新取流，所以录制中不给换。
+    // 直接按 deviceId 指定，这样才拿得到超广角 —— facingMode 只能到"前/后"这一层。
+    $("cam-lens").addEventListener("change", function () {
       if (cam.running) { return; }
-      cam.facing = cam.facing === "environment" ? "user" : "environment";
+      cam.deviceId = this.value || null;   // 空字符串 = 退回默认（自动）
+      lensSave(cam.deviceId);
       startPreview();
     });
     // 变焦不用重新取流，所以录制中也允许调（像摄像机推拉一样）
