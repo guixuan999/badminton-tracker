@@ -388,6 +388,13 @@ select {
 .cam select option { color: #111; background: #fff; }
 /* 镜头下拉：名称可能长（「后置 超广角」），别把画质那栏挤没 */
 .cam-row .cam-lens { flex: none; max-width: 52%; }
+/* 只有前置+后置时不用下拉，一个按钮更顺手（下拉得点两次还得挑） */
+.cam-flip {
+  background: transparent;
+  border-color: rgba(255, 255, 255, .35);
+  color: #fff;
+  flex: none;
+}
 
 .cam-bar { margin-top: 10px; }
 .cam-btn {

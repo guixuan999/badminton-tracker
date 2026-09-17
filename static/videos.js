@@ -944,6 +944,7 @@
     timer: null,
     facing: "environment",
     deviceId: null,     // 明确指定的镜头；null = 交给浏览器选默认后置（兼容旧行为）
+    devices: [],        // 枚举出来的摄像头，按「后置优先」排好序
     running: false,
     zoomWant: null      // 用户调过的倍数，换画质重新取流时带过去
   };
@@ -1039,12 +1040,17 @@
     return name || raw || ("摄像头 " + (i + 1));
   }
 
+  function hideLensControls() {
+    $("cam-lens").style.display = "none";
+    $("cam-flip").style.display = "none";
+  }
+
   /**
-   * 列出所有摄像头，让人能挑到超广角那颗。
-   *   - 必须等 getUserMedia 拿到权限之后再枚举，否则 label 和 deviceId 都是空的
-   *   - 只有一颗头就把整行藏起来，不摆一个没得选的下拉
-   * 顺带把当前在用的那颗设成选中项；如果它在列表里找不到（浏览器给的是个"默认逻辑摄像头"），
-   * 就补一个「默认（自动）」选项并选中它，留一条退回自动的路。
+   * 列出摄像头，决定用哪种控件：
+   *   - 只有前置 + 后置（绝大多数手机）→ 用一个「切换镜头」按钮，点一下就走，比下拉顺手
+   *   - 三颗及以上（这时可能真有超广角）→ 用下拉，能看见名字挑
+   *   - 只有一颗 → 两个都藏起来
+   * 必须等 getUserMedia 拿到权限之后再枚举，否则 label 和 deviceId 都是空的。
    */
   function refreshLensList(track) {
     var sel = $("cam-lens");
@@ -1057,7 +1063,6 @@
 
     navigator.mediaDevices.enumerateDevices().then(function (list) {
       var cams = list.filter(function (d) { return d.kind === "videoinput" && d.deviceId; });
-      if (cams.length < 2) { sel.style.display = "none"; return; }
 
       // 同名去重：一排「后置」根本分不清，给重复的加个序号
       var counts = {}, seq = {};
@@ -1069,7 +1074,17 @@
         d._rank = n.indexOf("后置") === 0 ? 0 : (n.indexOf("前置") === 0 ? 2 : 1);
       });
       cams.sort(function (a, b) { return a._rank - b._rank; });   // 后置排前面，拍训练用得上
+      cam.devices = cams;
 
+      if (cams.length < 2) { hideLensControls(); return; }
+
+      if (cams.length === 2) {
+        sel.style.display = "none";
+        $("cam-flip").style.display = "";
+        return;
+      }
+
+      $("cam-flip").style.display = "none";
       var html = "";
       var hasActive = false;
       cams.forEach(function (d) {
@@ -1084,7 +1099,24 @@
         sel.value = "";
       }
       sel.style.display = "";
-    }).catch(function () { sel.style.display = "none"; });
+    }).catch(function () { hideLensControls(); });
+  }
+
+  /** 按当前设备的镜头列表轮换 —— 「切换镜头」按钮就干这个 */
+  function cycleLens() {
+    if (cam.running || cam.devices.length < 2) { return; }
+    var active = cam.deviceId || "";
+    if (!active) {
+      var t = camTrack();
+      try { active = (t && t.getSettings && t.getSettings().deviceId) || ""; } catch (e) { active = ""; }
+    }
+    var i = -1;
+    for (var k = 0; k < cam.devices.length; k++) {
+      if (cam.devices[k].deviceId === active) { i = k; break; }
+    }
+    cam.deviceId = cam.devices[(i + 1) % cam.devices.length].deviceId;
+    lensSave(cam.deviceId);
+    startPreview();
   }
 
   function fmtZoom(v) {
@@ -1134,6 +1166,7 @@
     btn.disabled = !cam.stream && !cam.running;
     $("cam-quality").disabled = cam.running;
     $("cam-lens").disabled = cam.running;     // 换镜头要重新取流，录制中不给动
+    $("cam-flip").disabled = cam.running;
     $("cam-timer").style.display = cam.running ? "" : "none";
     if (!cam.running) { $("cam-timer").textContent = "00:00"; }
   }
@@ -1790,6 +1823,9 @@
     $("cam-quality").addEventListener("change", function () {
       if (!cam.running) { startPreview(); }   // 换档就重新取流，约束才生效
     });
+    // 只有前置+后置时用这个按钮，点一下轮换到下一颗（就是原来的手感）
+    $("cam-flip").addEventListener("click", cycleLens);
+
     // 换镜头（超广角/主摄/前置）要重新取流，所以录制中不给换。
     // 直接按 deviceId 指定，这样才拿得到超广角 —— facingMode 只能到"前/后"这一层。
     $("cam-lens").addEventListener("change", function () {
